@@ -169,6 +169,24 @@
             <dt><i class="bi bi-calendar3 me-2 text-muted"></i>Date Added</dt>
             <dd class="text-muted">{{ applicant.date_added[:10] if applicant.date_added else '—' }}</dd>
 
+            {% if applicant.source and applicant.source != 'Manual Entry' %}
+            <dt><i class="bi bi-globe2 me-2 text-muted"></i>Source</dt>
+            <dd>
+              <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle rounded-pill px-3 py-2">
+                <i class="bi bi-link-45deg me-1"></i>{{ applicant.source }}
+              </span>
+            </dd>
+            {% endif %}
+
+            {% if applicant.applied_position %}
+            <dt><i class="bi bi-bullseye me-2 text-muted"></i>Applied For</dt>
+            <dd>
+              <span class="badge bg-success-subtle text-success-emphasis border border-success-subtle rounded-pill px-3 py-2 fw-bold">
+                {{ applicant.applied_position }}
+              </span>
+            </dd>
+            {% endif %}
+
           </dl>
         </div>
       </div>

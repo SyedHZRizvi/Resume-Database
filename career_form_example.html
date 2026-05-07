@@ -1,0 +1,170 @@
+<!--
+  ════════════════════════════════════════════════════════════════════════════
+  TransCrypts — Sample Career Application Form
+  ════════════════════════════════════════════════════════════════════════════
+
+  HOW TO USE
+  1. Replace API_BASE_URL below with your actual Render URL once deployed
+     (e.g.  https://transcrypts-resume-db.onrender.com)
+  2. (Optional) If you set CAREERS_API_KEY env var on Render, also set
+     API_KEY below to the same value.  Leave empty to disable the check.
+  3. Drop this entire block into your website's careers page.  Adjust the
+     CSS classes to match your site's styling.
+  4. To make it position-specific, set the hidden "position" field — for
+     example each job listing's "Apply" button can pre-fill it.
+
+  REQUIRED FIELDS (form will refuse to submit without them):
+    • name
+    • email
+    • resume  (PDF or DOCX file)
+
+  OPTIONAL FIELDS:
+    • phone
+    • position           (leave blank → "Open Application — Suitable Position")
+    • linkedin_url
+    • cover_letter
+
+  ════════════════════════════════════════════════════════════════════════════
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Apply to TransCrypts</title>
+<style>
+  body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+         max-width: 640px; margin: 40px auto; padding: 24px;
+         color: #1e293b; background: #f2f8f5; }
+  h1   { color: #1a5c3e; margin: 0 0 8px; }
+  .sub { color: #6b7280; margin-bottom: 28px; }
+  .form-card { background: #ffffff; padding: 32px; border-radius: 12px;
+               border: 1px solid #c2e0cf; box-shadow: 0 4px 16px rgba(109,196,154,0.10); }
+  label { display: block; margin: 16px 0 6px; font-weight: 600; font-size: 14px; }
+  .req  { color: #dc2626; margin-left: 4px; }
+  input[type="text"], input[type="email"], input[type="tel"],
+  input[type="url"], input[type="file"], textarea, select {
+    width: 100%; padding: 10px 12px; box-sizing: border-box;
+    border: 1.5px solid #d1d5db; border-radius: 8px;
+    font-size: 15px; font-family: inherit;
+  }
+  input:focus, textarea:focus, select:focus {
+    outline: none; border-color: #6DC49A;
+    box-shadow: 0 0 0 3px rgba(109,196,154,0.25);
+  }
+  textarea { min-height: 110px; resize: vertical; }
+  button {
+    margin-top: 24px; width: 100%; padding: 14px;
+    background: linear-gradient(135deg,#4aaa7a,#6DC49A);
+    color: white; font-weight: 700; font-size: 16px;
+    border: none; border-radius: 8px; cursor: pointer;
+    transition: transform 0.1s, box-shadow 0.1s;
+  }
+  button:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(109,196,154,0.4); }
+  button:disabled { opacity: 0.6; cursor: wait; }
+  .msg { margin-top: 18px; padding: 14px; border-radius: 8px; font-size: 14px; }
+  .msg.success { background: #f0fdf4; color: #14532d; border: 1px solid #86efac; }
+  .msg.error   { background: #fef2f2; color: #7f1d1d; border: 1px solid #fca5a5; }
+  .small  { font-size: 13px; color: #6b7280; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<h1>Apply to TransCrypts</h1>
+<p class="sub">We're hiring! Submit your application below and our team will be in touch.</p>
+
+<div class="form-card">
+  <form id="careerForm" enctype="multipart/form-data">
+    <label for="position">Position you're applying for
+      <span class="small">(leave blank for an open application)</span>
+    </label>
+    <select name="position" id="position">
+      <option value="">— Open Application (any suitable role) —</option>
+      <option value="FullStack Developer">FullStack Developer</option>
+      <option value="Software Engineer">Software Engineer</option>
+      <option value="Frontend Engineer">Frontend Engineer</option>
+      <option value="DevOps Engineer">DevOps Engineer</option>
+      <option value="Product Manager">Product Manager</option>
+      <option value="Account Executive">Account Executive</option>
+      <!-- Add or remove jobs as needed -->
+    </select>
+
+    <label for="name">Full name <span class="req">*</span></label>
+    <input type="text" name="name" id="name" required>
+
+    <label for="email">Email address <span class="req">*</span></label>
+    <input type="email" name="email" id="email" required>
+
+    <label for="phone">Phone number</label>
+    <input type="tel" name="phone" id="phone">
+
+    <label for="linkedin_url">LinkedIn profile</label>
+    <input type="url" name="linkedin_url" id="linkedin_url"
+           placeholder="https://www.linkedin.com/in/your-handle">
+
+    <label for="resume">Resume (PDF or DOCX) <span class="req">*</span></label>
+    <input type="file" name="resume" id="resume"
+           accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+           required>
+
+    <label for="cover_letter">Cover letter / brief intro
+      <span class="small">(optional — tell us why you're a great fit)</span>
+    </label>
+    <textarea name="cover_letter" id="cover_letter" rows="5"
+              placeholder="A short paragraph about yourself…"></textarea>
+
+    <button type="submit" id="submitBtn">Submit Application</button>
+    <div id="msg"></div>
+  </form>
+</div>
+
+<script>
+  // ════════════════════════════════════════════════════════════════════════
+  //  CONFIGURATION — replace with your real values
+  // ════════════════════════════════════════════════════════════════════════
+  const API_BASE_URL = "https://YOUR-RENDER-APP.onrender.com";  // ← change this
+  const API_KEY      = "";  // ← optional, set if you set CAREERS_API_KEY on Render
+  // ════════════════════════════════════════════════════════════════════════
+
+  document.getElementById('careerForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form    = e.target;
+    const btn     = document.getElementById('submitBtn');
+    const msgBox  = document.getElementById('msg');
+    btn.disabled  = true;
+    btn.textContent = "Submitting…";
+    msgBox.className = '';
+    msgBox.textContent = '';
+
+    try {
+      const fd = new FormData(form);
+      const headers = {};
+      if (API_KEY) headers['X-API-Key'] = API_KEY;
+
+      const res = await fetch(API_BASE_URL + '/api/careers/apply', {
+        method: 'POST',
+        body: fd,
+        headers: headers,
+      });
+      const data = await res.json();
+
+      if (res.ok && data.ok) {
+        msgBox.className = 'msg success';
+        msgBox.textContent = data.message || 'Thanks — application received!';
+        form.reset();
+      } else {
+        msgBox.className = 'msg error';
+        msgBox.textContent = data.message || 'Something went wrong. Please try again.';
+        btn.disabled = false;
+        btn.textContent = "Submit Application";
+      }
+    } catch (err) {
+      msgBox.className = 'msg error';
+      msgBox.textContent = 'Network error: ' + err.message;
+      btn.disabled = false;
+      btn.textContent = "Submit Application";
+    }
+  });
+</script>
+</body>
+</html>

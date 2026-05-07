@@ -337,6 +337,10 @@ def init_db():
             ('decision_date',     'TEXT'),
             ('decision_notes',    'TEXT'),
             ('file_hash',         'TEXT'),
+            # ── Career-website integration ────────────────────────────────────
+            ('source',            "TEXT DEFAULT 'Manual Entry'"),
+            ('applied_position',  'TEXT'),
+            ('cover_letter',      'TEXT'),
         ]:
             try:
                 conn.execute(f'ALTER TABLE applicants ADD COLUMN {col} {definition}')
@@ -3200,6 +3204,191 @@ def api_staff():
             'SELECT name, email, designation FROM staff ORDER BY name COLLATE NOCASE ASC'
         ).fetchall()
     return jsonify([dict(r) for r in rows])
+
+
+# ─── Public Careers API ───────────────────────────────────────────────────────
+#  This endpoint accepts career applications submitted from the company website
+#  (transcrypts.com).  It is INTENTIONALLY public — anyone applying for a job
+#  needs to be able to POST without an admin account.
+#
+#  Security model:
+#    • Optional shared API key  (CAREERS_API_KEY env var). If set, the website
+#      must include it in the X-API-Key header.  Stops random spammers.
+#    • Per-IP rate limit            — 5 submissions per IP per hour
+#    • File-type / size validation  — same rules as the regular upload form
+#    • All submissions land in the audit log
+#
+#  Required form fields (multipart/form-data):
+#    resume     — the actual file (PDF or DOCX)
+#    name       — applicant's full name
+#    email      — applicant's email address
+#  Optional fields:
+#    phone, position, cover_letter, linkedin_url
+#
+#  CORS: enabled for any origin so the JS form on transcrypts.com can POST.
+#  ────────────────────────────────────────────────────────────────────────────
+
+# Simple in-memory rate-limit store: { 'ip': [datetime, datetime, ...] }
+_RATE_LIMIT_STORE: dict[str, list[datetime]] = {}
+_RATE_LIMIT_MAX_PER_HOUR = 5
+
+
+def _check_rate_limit(ip: str) -> bool:
+    """Return True if the IP is within the rate limit, False if exceeded."""
+    now = datetime.now()
+    cutoff = now - timedelta(hours=1)
+    hits = _RATE_LIMIT_STORE.get(ip, [])
+    hits = [t for t in hits if t > cutoff]
+    if len(hits) >= _RATE_LIMIT_MAX_PER_HOUR:
+        _RATE_LIMIT_STORE[ip] = hits
+        return False
+    hits.append(now)
+    _RATE_LIMIT_STORE[ip] = hits
+    return True
+
+
+@app.after_request
+def _add_cors_headers(response):
+    """Allow cross-origin POSTs from the company website."""
+    response.headers['Access-Control-Allow-Origin']  = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, X-API-Key'
+    return response
+
+
+@app.route('/api/careers/apply', methods=['POST', 'OPTIONS'])
+def api_careers_apply():
+    """
+    Public endpoint — receives a career application from the website.
+    Returns JSON {ok: bool, applicant_id: int, message: str}.
+    """
+    # Browser CORS pre-flight
+    if request.method == 'OPTIONS':
+        return ('', 204)
+
+    # ── Optional API key check ───────────────────────────────────────────────
+    expected_key = os.environ.get('CAREERS_API_KEY', '').strip()
+    if expected_key:
+        provided = request.headers.get('X-API-Key', '').strip()
+        if provided != expected_key:
+            return jsonify({'ok': False,
+                            'message': 'Unauthorized — invalid API key.'}), 401
+
+    # ── Rate limit by IP ─────────────────────────────────────────────────────
+    client_ip = request.headers.get('X-Forwarded-For',
+                                     request.remote_addr or '0.0.0.0').split(',')[0].strip()
+    if not _check_rate_limit(client_ip):
+        return jsonify({'ok': False,
+                        'message': 'Too many submissions. Please try again later.'}), 429
+
+    # ── Validate required fields ─────────────────────────────────────────────
+    name  = (request.form.get('name')  or '').strip()
+    email = (request.form.get('email') or '').strip()
+    if not name or not email:
+        return jsonify({'ok': False,
+                        'message': 'Name and email are required.'}), 400
+
+    file = request.files.get('resume')
+    if not file or not file.filename:
+        return jsonify({'ok': False,
+                        'message': 'Resume file is required.'}), 400
+
+    if not allowed_file(file.filename):
+        return jsonify({'ok': False,
+                        'message': 'Resume must be a PDF or DOCX file.'}), 400
+
+    # Optional fields
+    phone        = (request.form.get('phone')        or '').strip()
+    position     = (request.form.get('position')     or '').strip()
+    cover_letter = (request.form.get('cover_letter') or '').strip()
+    linkedin_url = (request.form.get('linkedin_url') or '').strip()
+    github_url   = (request.form.get('github_url')   or '').strip()
+
+    # ── Save the file with a unique filename ────────────────────────────────
+    raw = file.read()
+    file.seek(0)
+    file_hash = hashlib.md5(raw).hexdigest()
+    safe_name = secure_filename(file.filename)
+    base, ext = os.path.splitext(safe_name)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    final_name = f"CareerApp_{base[:40]}_{timestamp}{ext}"
+    final_path = os.path.join(app.config['UPLOAD_FOLDER'], final_name)
+    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+    with open(final_path, 'wb') as f:
+        f.write(raw)
+
+    # ── Try to parse the resume in the background to enrich the record ──────
+    parsed = {}
+    try:
+        text = _extract_text_from_file(raw, final_name.lower())
+        if text and text.strip():
+            parsed = _smart_parse(text) or {}
+    except Exception:
+        parsed = {}
+
+    # Position → display label
+    position_label   = position or 'Open Application — Suitable Position'
+    source_label     = 'Career Website' + (f' — {position}' if position else ' — Open Application')
+
+    # ── Insert into DB ───────────────────────────────────────────────────────
+    with get_db() as conn:
+        # De-dupe: if the same file_hash already exists, return that record
+        existing = conn.execute(
+            'SELECT id FROM applicants WHERE file_hash=?', (file_hash,)
+        ).fetchone()
+        if existing:
+            return jsonify({
+                'ok': True,
+                'applicant_id': existing['id'],
+                'duplicate': True,
+                'message': ("We already have your resume on file — we'll review "
+                            "it for this position. Thank you!"),
+            })
+
+        cur = conn.execute(
+            '''INSERT INTO applicants
+               (name, email, phone, specialty, years_experience, highest_education,
+                skills, resume_filename, notes, date_added, hiring_status,
+                linkedin_url, github_url, file_hash, source, applied_position,
+                cover_letter)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+            (
+                name, email, phone or parsed.get('phone', ''),
+                parsed.get('specialty', position or ''),
+                parsed.get('years_experience', 0) or 0,
+                parsed.get('highest_education', ''),
+                parsed.get('skills', ''),
+                final_name,
+                parsed.get('notes', ''),
+                datetime.now().isoformat(timespec='seconds'),
+                'Under Review',
+                linkedin_url or parsed.get('linkedin_url', ''),
+                github_url   or parsed.get('github_url',   ''),
+                file_hash,
+                source_label,
+                position_label,
+                cover_letter,
+            )
+        )
+        applicant_id = cur.lastrowid
+        conn.commit()
+
+    log_action('CAREER APPLICATION', name,
+               f'Position: {position_label} | IP: {client_ip}')
+
+    return jsonify({
+        'ok': True,
+        'applicant_id': applicant_id,
+        'message': ("Thank you for applying! We've received your application "
+                    "and our team will review it shortly."),
+    })
+
+
+@app.route('/api/careers/health')
+def api_careers_health():
+    """Lightweight health check the website can call to verify the API is up."""
+    return jsonify({'ok': True, 'service': 'TransCrypts Resume DB',
+                    'careers_api': 'online'})
 
 
 @app.route('/api-status', methods=['GET'])
