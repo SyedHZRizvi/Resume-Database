@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Edit — {{ applicant.name }} — Resume Database</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
+  <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet" />
+</head>
+<body>
+
+<!-- ── Navbar ─────────────────────────────────────────────────────────────── -->
+<nav class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm">
+  <div class="container-fluid px-4">
+    <a class="navbar-brand tc-logo" href="{{ url_for('index') }}">
+      <span class="tc-logo-icon-wrap">
+        <i class="bi bi-file-earmark-text tc-doc"></i>
+        <span class="tc-check"><i class="bi bi-check-lg"></i></span>
+      </span>
+      <span class="tc-logo-text">
+        <span class="tc-trans">Trans</span><span class="tc-crypts">Crypts</span>
+      </span>
+    </a>
+    <div class="ms-auto d-flex align-items-center gap-2">
+      <a href="{{ url_for('index') }}" class="btn btn-home" title="Home">
+        <i class="bi bi-house-fill me-1"></i> Home
+      </a>
+      <a href="{{ url_for('view_resume', applicant_id=applicant.id) }}" class="btn btn-outline-light">
+        <i class="bi bi-arrow-left me-1"></i> Cancel Edit
+      </a>
+      {% if require_login %}
+      <div class="dropdown">
+        <button class="btn btn-outline-light dropdown-toggle d-flex align-items-center gap-2"
+                type="button" data-bs-toggle="dropdown">
+          <i class="bi bi-person-circle"></i>
+          <span class="d-none d-lg-inline">{{ session.full_name }}</span>
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end shadow">
+          <li><h6 class="dropdown-header">{{ session.username }}</h6></li>
+          <li><a class="dropdown-item" href="{{ url_for('change_password') }}">
+            <i class="bi bi-shield-lock me-2 text-muted"></i>Change Password</a></li>
+          {% if can_users %}
+            <li><a class="dropdown-item" href="{{ url_for('manage_users') }}">
+              <i class="bi bi-people-fill me-2 text-muted"></i>Manage Users</a></li>
+          {% endif %}
+          {% if can_audit %}
+            <li><a class="dropdown-item" href="{{ url_for('audit_log') }}">
+              <i class="bi bi-journal-text me-2 text-muted"></i>Audit Log</a></li>
+          {% endif %}
+          <li><hr class="dropdown-divider"></li>
+          <li>
+            <form method="POST" action="{{ url_for('logout') }}" class="d-inline">
+              <button type="submit" class="dropdown-item text-danger">
+                <i class="bi bi-box-arrow-right me-2"></i>Sign Out
+              </button>
+            </form>
+          </li>
+        </ul>
+      </div>
+      {% endif %}
+      <button type="button" class="btn btn-danger fw-semibold px-3" onclick="showShutdownModal()">
+        <i class="bi bi-power me-1"></i> Close Program
+      </button>
+    </div>
+  </div>
+</nav>
+
+<div class="container py-5" style="max-width: 860px;">
+
+  <!-- ── Page Header ──────────────────────────────────────────────────────── -->
+  <div class="mb-4">
+    <h2 class="fw-bold text-dark mb-1">
+      <i class="bi bi-pencil-square text-primary me-2"></i>Edit Resume
+    </h2>
+    <p class="text-muted mb-0">
+      Editing record for <strong>{{ applicant.name }}</strong>.
+      Fields marked with <span class="text-danger">*</span> are required.
+    </p>
+  </div>
+
+  <!-- ── Flash Messages ───────────────────────────────────────────────────── -->
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for category, message in messages %}
+        <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }} alert-dismissible fade show shadow-sm">
+          <i class="bi bi-{{ 'check-circle-fill' if category == 'success' else 'exclamation-triangle-fill' }} me-2"></i>
+          {{ message }}
+          <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  <!-- ── Form ─────────────────────────────────────────────────────────────── -->
+  <form method="POST" enctype="multipart/form-data" id="editForm">
+
+    <!-- Section 1: Personal Information -->
+    <div class="card border-0 shadow-sm mb-4">
+      <div class="card-header bg-white py-3">
+        <h5 class="mb-0 fw-semibold">
+          <span class="step-badge bg-primary text-white me-2">1</span>
+          Personal Information
+        </h5>
+      </div>
+      <div class="card-body p-4">
+        <div class="row g-3">
+
+          <div class="col-12 col-md-6">
+            <label class="form-label fw-semibold" for="name">
+              Full Name <span class="text-danger">*</span>
+            </label>
+            <input type="text" class="form-control form-control-lg" id="name" name="name"
+                   value="{{ applicant.name }}" required />
+          </div>
+
+          <div class="col-12 col-md-6">
+            <label class="form-label fw-semibold" for="email">Email Address</label>
+            <input type="email" class="form-control form-control-lg" id="email" name="email"
+                   value="{{ applicant.email or '' }}" placeholder="e.g. name@email.com" />
+          </div>
+
+          <div class="col-12 col-md-6">
+            <label class="form-label fw-semibold" for="phone">Phone Number</label>
+            <input type="tel" class="form-control form-control-lg" id="phone" name="phone"
+                   value="{{ applicant.phone or '' }}" placeholder="e.g. +1 555 123 4567" />
+          </div>
+
+          <div class="col-12 col-md-6">
+            <label class="form-label fw-semibold" for="linkedin_url">LinkedIn URL</label>
+            <div class="input-group input-group-lg">
+              <span class="input-group-text">
+                <i class="bi bi-linkedin text-primary"></i>
+              </span>
+              <input type="url" class="form-control form-control-lg" id="linkedin_url" name="linkedin_url"
+                     placeholder="https://linkedin.com/in/username"
+                     value="{{ applicant.linkedin_url or '' }}" />
+            </div>
+          </div>
+
+          <div class="col-12 col-md-6">
+            <label class="form-label fw-semibold" for="github_url">GitHub URL</label>
+            <div class="input-group input-group-lg">
+              <span class="input-group-text">
+                <i class="bi bi-github text-dark"></i>
+              </span>
+              <input type="url" class="form-control form-control-lg" id="github_url" name="github_url"
+                     placeholder="https://github.com/username"
+                     value="{{ applicant.github_url or '' }}" />
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- Section 2: Professional Details -->
+    <div class="card border-0 shadow-sm mb-4">
+      <div class="card-header bg-white py-3">
+        <h5 class="mb-0 fw-semibold">
+          <span class="step-badge bg-primary text-white me-2">2</span>
+          Professional Details
+        </h5>
+      </div>
+      <div class="card-body p-4">
+        <div class="row g-3">
+
+          <div class="col-12 col-md-6">
+            <label class="form-label fw-semibold" for="specialty">
+              Specialty / Field <span class="text-danger">*</span>
+            </label>
+            <input type="text" class="form-control form-control-lg" id="specialty" name="specialty"
+                   value="{{ applicant.specialty }}" required list="specialtyList" />
+            <datalist id="specialtyList">
+              <option value="IT Administration & DevOps">
+              <option value="Network Engineering">
+              <option value="Database Administration">
+              <option value="Cybersecurity">
+              <option value="IT Support">
+              <option value="Software Engineering">
+              <option value="Data Science">
+              <option value="Data Engineering">
+              <option value="Data Analytics">
+              <option value="Machine Learning">
+              <option value="Product Management">
+              <option value="Project Management">
+              <option value="Graphic Design">
+              <option value="Marketing">
+              <option value="Finance & Accounting">
+              <option value="Human Resources">
+              <option value="Sales">
+              <option value="Legal">
+              <option value="Healthcare">
+              <option value="Education">
+              <option value="Civil Engineering">
+              <option value="Mechanical Engineering">
+              <option value="Electrical Engineering">
+              <option value="Architecture">
+              <option value="Supply Chain & Logistics">
+              <option value="Customer Service">
+              <option value="Business Development">
+              <option value="Operations">
+            </datalist>
+          </div>
+
+          <div class="col-12 col-md-6">
+            <label class="form-label fw-semibold" for="years_experience">Years of Experience</label>
+            <div class="input-group input-group-lg">
+              <input type="number" class="form-control" id="years_experience" name="years_experience"
+                     value="{{ applicant.years_experience or 0 }}" min="0" max="60" />
+              <span class="input-group-text text-muted">years</span>
+            </div>
+          </div>
+
+          <div class="col-12 col-md-6">
+            <label class="form-label fw-semibold" for="highest_education">Highest Education</label>
+            <select class="form-select form-select-lg" id="highest_education" name="highest_education">
+              <option value="">— Select —</option>
+              {% for level in ['High School Diploma','Associate Degree',"Bachelor's Degree","Master's Degree",'MBA','PhD / Doctorate','Professional Certification','Diploma / Vocational Training','Self-Taught'] %}
+                <option value="{{ level }}" {{ 'selected' if applicant.highest_education == level }}>{{ level }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="col-12">
+            <label class="form-label fw-semibold" for="skills">Key Skills</label>
+            <input type="text" class="form-control form-control-lg" id="skills" name="skills"
+                   value="{{ applicant.skills or '' }}"
+                   placeholder="e.g. Python, Excel, Project Management" />
+            <div class="form-text">Separate skills with commas.</div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- Section 3: Resume File -->
+    <div class="card border-0 shadow-sm mb-4">
+      <div class="card-header bg-white py-3">
+        <h5 class="mb-0 fw-semibold">
+          <span class="step-badge bg-primary text-white me-2">3</span>
+          Resume File
+        </h5>
+      </div>
+      <div class="card-body p-4">
+
+        <!-- Current file display -->
+        {% if applicant.resume_filename %}
+          <div class="alert alert-success d-flex align-items-center justify-content-between mb-3">
+            <div>
+              <i class="bi bi-file-earmark-check-fill me-2 fs-5"></i>
+              <strong>Current file:</strong> {{ applicant.resume_filename }}
+            </div>
+            <div class="d-flex align-items-center gap-3">
+              <a href="{{ url_for('uploaded_file', filename=applicant.resume_filename) }}"
+                 target="_blank" class="btn btn-sm btn-outline-success">
+                <i class="bi bi-eye me-1"></i>View
+              </a>
+              <div class="form-check mb-0">
+                <input class="form-check-input" type="checkbox" id="remove_file" name="remove_file" value="1">
+                <label class="form-check-label text-danger" for="remove_file">Remove this file</label>
+              </div>
+            </div>
+          </div>
+        {% endif %}
+
+        <label class="form-label fw-semibold" for="resume_file">
+          {{ 'Replace with new file' if applicant.resume_filename else 'Upload Resume File' }}
+          <span class="badge bg-light text-muted fw-normal ms-1">Optional</span>
+        </label>
+        <input type="file" class="form-control form-control-lg" id="resume_file"
+               name="resume_file"
+               accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tiff,.tif" />
+        <div class="form-text">PDF, DOC, DOCX, JPG, PNG, TIFF &amp; more — scanned files supported — Max 32 MB</div>
+
+        <!-- File selected: preview + Auto-Fill button -->
+        <div class="mt-3" id="filePreview" style="display:none">
+          <div class="d-flex flex-column flex-md-row align-items-md-center gap-3">
+            <div class="alert alert-info d-flex align-items-center mb-0 flex-grow-1">
+              <i class="bi bi-file-earmark-check me-2 fs-5"></i>
+              <span id="filePreviewName"></span>
+            </div>
+            <button type="button" class="btn btn-success btn-lg px-4 fw-semibold flex-shrink-0"
+                    id="autoFillBtn" onclick="autoFillFromResume()">
+              <i class="bi bi-stars me-2"></i>Auto-Fill from Resume
+            </button>
+          </div>
+          <div class="form-text mt-1">
+            <i class="bi bi-info-circle me-1 text-primary"></i>
+            Click <strong>Auto-Fill</strong> to let AI read the resume and update the fields automatically.
+          </div>
+        </div>
+
+        <!-- AI parsing status -->
+        <div id="parseStatus" class="mt-3" style="display:none"></div>
+
+      </div>
+    </div>
+
+    <!-- Section 4: Notes -->
+    <div class="card border-0 shadow-sm mb-4">
+      <div class="card-header bg-white py-3">
+        <h5 class="mb-0 fw-semibold">
+          <span class="step-badge bg-secondary text-white me-2">4</span>
+          Internal Notes
+          <span class="badge bg-light text-muted fw-normal ms-2">Optional</span>
+        </h5>
+      </div>
+      <div class="card-body p-4">
+        <textarea class="form-control" id="notes" name="notes" rows="4"
+                  placeholder="Internal notes about this applicant…">{{ applicant.notes or '' }}</textarea>
+      </div>
+    </div>
+
+    <!-- Section 5: Edit Reason — why is this record being changed? -->
+    <div class="card border-0 shadow-sm mb-4" style="border-left: 4px solid #f59e0b !important;">
+      <div class="card-header bg-white py-3">
+        <h5 class="mb-0 fw-semibold">
+          <span class="step-badge bg-warning text-dark me-2">5</span>
+          Reason for Edit
+          <span class="badge bg-light text-muted fw-normal ms-2">Recommended</span>
+        </h5>
+      </div>
+      <div class="card-body p-4">
+        <textarea class="form-control" id="edit_notes" name="edit_notes" rows="2"
+                  placeholder="Briefly describe what you changed and why — e.g. 'Updated skills list after phone screening', 'Corrected years of experience based on CV review'…"></textarea>
+        <div class="form-text">
+          <i class="bi bi-journal-text text-primary me-1"></i>
+          This note is saved to the <strong>Audit Log</strong> alongside your name, role, and timestamp — creating a permanent record of every change.
+        </div>
+      </div>
+    </div>
+
+    <!-- Buttons -->
+    <div class="d-flex gap-3 justify-content-end">
+      <a href="{{ url_for('view_resume', applicant_id=applicant.id) }}"
+         class="btn btn-outline-secondary btn-lg px-4">
+        <i class="bi bi-x-circle me-1"></i> Cancel
+      </a>
+      <button type="submit" class="btn btn-primary btn-lg px-5" id="submitBtn">
+        <i class="bi bi-save-fill me-2"></i> Save Changes
+      </button>
+    </div>
+
+  </form>
+</div>
+
+<!-- ── AI Setup Guide Modal ────────────────────────────────────────────────── -->
+<div class="modal fade" id="aiSetupModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title fw-bold">
+          <i class="bi bi-stars text-warning me-2"></i>Set Up AI Auto-Fill — 3 Easy Steps
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted mb-4">The AI feature needs a free API key from Anthropic. It takes about 3 minutes to set up.</p>
+        <div class="d-flex flex-column gap-3">
+          <div class="d-flex gap-3 align-items-start p-3 rounded-3 bg-light">
+            <div class="step-badge bg-primary text-white flex-shrink-0 mt-1" style="width:32px;height:32px;font-size:1rem">1</div>
+            <div>
+              <div class="fw-semibold">Get a free API key</div>
+              <div class="text-muted small mb-2">Sign up at the link below, then go to <strong>API Keys → Create Key</strong></div>
+              <a href="https://console.anthropic.com/" target="_blank" class="btn btn-sm btn-outline-primary">
+                <i class="bi bi-box-arrow-up-right me-1"></i> Open console.anthropic.com
+              </a>
+            </div>
+          </div>
+          <div class="d-flex gap-3 align-items-start p-3 rounded-3 bg-light">
+            <div class="step-badge bg-primary text-white flex-shrink-0 mt-1" style="width:32px;height:32px;font-size:1rem">2</div>
+            <div>
+              <div class="fw-semibold">Paste your key into config.py</div>
+              <div class="text-muted small mb-2">Click below to open the settings file, replace <code>your-api-key-here</code> with your key, then press <strong>Ctrl+S</strong>.</div>
+              <button type="button" class="btn btn-sm btn-warning fw-semibold" onclick="openConfig()">
+                <i class="bi bi-pencil-fill me-1"></i> Open config.py in Notepad
+              </button>
+              <div id="configOpenStatus" class="mt-2" style="display:none"></div>
+            </div>
+          </div>
+          <div class="d-flex gap-3 align-items-start p-3 rounded-3 bg-light">
+            <div class="step-badge bg-primary text-white flex-shrink-0 mt-1" style="width:32px;height:32px;font-size:1rem">3</div>
+            <div>
+              <div class="fw-semibold">Restart the app</div>
+              <div class="text-muted small">Close this tab and double-click <strong>START_APP.bat</strong> on your desktop again.</div>
+            </div>
+          </div>
+        </div>
+        <div class="alert alert-info mt-4 mb-0">
+          <i class="bi bi-info-circle-fill me-2"></i>
+          <strong>Cost:</strong> Free credits included. Parsing one resume costs less than <strong>$0.001</strong>.
+        </div>
+      </div>
+      <div class="modal-footer border-0">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Shutdown Modal ──────────────────────────────────────────────────────── -->
+<div class="modal fade" id="shutdownModal" tabindex="-1" data-bs-backdrop="static">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title fw-bold"><i class="bi bi-power text-danger me-2"></i>Close Program</h5>
+      </div>
+      <div class="modal-body py-3">
+        <div class="alert alert-success d-flex align-items-center mb-3">
+          <i class="bi bi-shield-fill-check fs-5 me-2"></i>
+          <div><strong>All data is saved.</strong> Every record is stored safely in the database.</div>
+        </div>
+        <p class="mb-0 text-muted">Are you sure you want to close the Resume Database?</p>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-secondary px-4" data-bs-dismiss="modal">
+          <i class="bi bi-arrow-left me-1"></i> Go Back
+        </button>
+        <button type="button" class="btn btn-danger px-4" id="confirmShutdownBtn" onclick="doShutdown()">
+          <i class="bi bi-power me-1"></i> Yes, Close Program
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+function showShutdownModal() { new bootstrap.Modal(document.getElementById('shutdownModal')).show(); }
+function doShutdown() {
+  const btn = document.getElementById('confirmShutdownBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span> Closing…';
+  fetch('/shutdown', { method: 'POST' }).finally(() => {
+    document.body.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:Segoe UI,sans-serif;background:#f1f5f9;"><div style="background:white;border-radius:16px;padding:48px 56px;box-shadow:0 8px 32px rgba(0,0,0,0.1);text-align:center;max-width:420px;"><div style="font-size:3.5rem;color:#16a34a;margin-bottom:16px;">&#x2705;</div><h3 style="font-weight:700;color:#1e293b;margin-bottom:8px;">Program Closed</h3><p style="color:#64748b;margin-bottom:0;">All data has been saved successfully.<br>You can now close this browser tab.</p></div></div>`;
+  });
+}
+
+// ── File selection — show preview + Auto-Fill button ──────────────────────────
+document.getElementById('resume_file').addEventListener('change', function () {
+  const preview = document.getElementById('filePreview');
+  const nameEl  = document.getElementById('filePreviewName');
+  const status  = document.getElementById('parseStatus');
+  if (this.files.length > 0) {
+    const file = this.files[0];
+    nameEl.textContent = `${file.name}  (${(file.size/1024/1024).toFixed(2)} MB)`;
+    preview.style.display = 'block';
+    status.style.display  = 'none';
+    clearAutoFillHighlights();
+  } else {
+    preview.style.display = 'none';
+  }
+});
+
+// ── Auto-Fill from Resume ─────────────────────────────────────────────────────
+async function autoFillFromResume() {
+  const fileInput = document.getElementById('resume_file');
+  if (!fileInput.files.length) return;
+
+  const btn    = document.getElementById('autoFillBtn');
+  const status = document.getElementById('parseStatus');
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span> Reading resume…';
+  status.style.display = 'block';
+  status.innerHTML = `
+    <div class="alert alert-info d-flex align-items-center gap-3 mb-0">
+      <span class="spinner-border spinner-border-sm text-primary flex-shrink-0"></span>
+      <span><strong>AI is reading your resume…</strong> This takes a few seconds. Please wait.</span>
+    </div>`;
+
+  try {
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+
+    const response = await fetch('/parse-resume', { method: 'POST', body: formData });
+    const data     = await response.json();
+
+    if (!response.ok || data.error) {
+      status.innerHTML = `
+        <div class="alert alert-warning d-flex align-items-start gap-2 mb-0">
+          <i class="bi bi-exclamation-triangle-fill flex-shrink-0 mt-1"></i>
+          <div><strong>Note:</strong> ${data.error || 'Unknown error.'}<br>
+          <small class="text-muted">Please fill in the fields manually.</small></div>
+        </div>`;
+      return;
+    }
+
+    let filled = 0;
+    const fieldMap = {
+      name:             data.name,
+      email:            data.email,
+      phone:            data.phone,
+      specialty:        data.specialty,
+      years_experience: data.years_experience,
+      skills:           data.skills,
+      notes:            data.notes,
+    };
+
+    for (const [id, value] of Object.entries(fieldMap)) {
+      const el = document.getElementById(id);
+      if (el && value !== undefined && value !== null && String(value).trim() !== '') {
+        el.value = String(value).trim();
+        el.classList.add('auto-filled');
+        filled++;
+      }
+    }
+
+    if (data.highest_education) {
+      const sel = document.getElementById('highest_education');
+      for (const opt of sel.options) {
+        if (opt.value === data.highest_education) {
+          sel.value = data.highest_education;
+          sel.classList.add('auto-filled');
+          filled++;
+          break;
+        }
+      }
+    }
+
+    status.innerHTML = `
+      <div class="alert alert-success d-flex align-items-start gap-2 mb-0">
+        <i class="bi bi-stars flex-shrink-0 mt-1 fs-5"></i>
+        <div>
+          <strong>✓ ${filled} fields updated automatically!</strong>
+          <br><small class="text-muted">Please review the information below and correct anything if needed before saving.</small>
+        </div>
+      </div>`;
+
+  } catch (err) {
+    status.innerHTML = `
+      <div class="alert alert-danger mb-0">
+        <i class="bi bi-wifi-off me-2"></i><strong>Connection error.</strong>
+        Make sure the app is still running and try again.
+      </div>`;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-stars me-2"></i>Auto-Fill from Resume';
+  }
+}
+
+function clearAutoFillHighlights() {
+  document.querySelectorAll('.auto-filled').forEach(el => el.classList.remove('auto-filled'));
+}
+
+async function openConfig() {
+  const statusEl = document.getElementById('configOpenStatus');
+  try {
+    const r = await fetch('/open-config', { method: 'POST' });
+    if (r.ok) {
+      statusEl.style.display = 'block';
+      statusEl.innerHTML = '<span class="text-success"><i class="bi bi-check-circle-fill me-1"></i>Notepad opened! Paste your key, press Ctrl+S, then restart the app.</span>';
+    }
+  } catch(e) {
+    statusEl.style.display = 'block';
+    statusEl.innerHTML = '<span class="text-danger">Could not open Notepad. Please open config.py manually from D:\\ResumeDatabase\\</span>';
+  }
+}
+
+// ── Prevent double-submit ─────────────────────────────────────────────────────
+document.getElementById('editForm').addEventListener('submit', function () {
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span> Saving…';
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign In — TransCrypts Resume Database</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
+  <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet" />
+  <style>
+    body {
+      min-height: 100vh;
+      background: linear-gradient(135deg, #3d8f68 0%, #6DC49A 50%, #a8dfc2 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+    }
+    .login-card {
+      width: 100%;
+      max-width: 440px;
+      border-radius: 20px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+      overflow: hidden;
+    }
+    .login-header {
+      background: linear-gradient(135deg, #4aaa7a, #6DC49A);
+      padding: 2.5rem 2rem 2rem;
+      text-align: center;
+    }
+    .login-body {
+      background: #ffffff;
+      padding: 2rem 2.5rem 2.5rem;
+    }
+    .login-icon-wrap {
+      position: relative;
+      display: inline-block;
+      margin-bottom: 1rem;
+    }
+    .login-doc-icon {
+      font-size: 3.5rem;
+      color: rgba(255,255,255,0.9);
+    }
+    .login-check {
+      position: absolute;
+      bottom: -2px;
+      right: -4px;
+      background: #fff;
+      color: #4aaa7a;
+      border-radius: 50%;
+      width: 22px;
+      height: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.8rem;
+      font-weight: 700;
+    }
+    .login-title {
+      color: #fff;
+      font-weight: 800;
+      font-size: 1.6rem;
+      margin-bottom: 0.2rem;
+    }
+    .login-subtitle {
+      color: rgba(255,255,255,0.8);
+      font-size: 0.9rem;
+    }
+    .form-label {
+      font-weight: 600;
+      color: #374151;
+      font-size: 0.9rem;
+    }
+    .form-control {
+      border-radius: 10px;
+      padding: 0.65rem 1rem;
+      border: 1.5px solid #e5e7eb;
+      font-size: 0.95rem;
+    }
+    .form-control:focus {
+      border-color: #6DC49A;
+      box-shadow: 0 0 0 3px rgba(109,196,154,0.2);
+    }
+    .btn-signin {
+      background: linear-gradient(135deg, #4aaa7a, #6DC49A);
+      border: none;
+      color: #fff;
+      font-weight: 700;
+      padding: 0.75rem;
+      border-radius: 10px;
+      font-size: 1rem;
+      letter-spacing: 0.02em;
+      transition: opacity 0.15s;
+    }
+    .btn-signin:hover { opacity: 0.9; color: #fff; }
+    .input-group-text {
+      background: #f9fafb;
+      border-color: #e5e7eb;
+      border-right: none;
+      color: #9ca3af;
+    }
+    .input-group .form-control { border-left: none; }
+    .input-group .form-control:focus { border-left: none; }
+    .footer-text {
+      color: #9ca3af;
+      font-size: 0.8rem;
+      text-align: center;
+      margin-top: 1.5rem;
+    }
+  </style>
+</head>
+<body>
+
+<div class="login-card">
+
+  <!-- Header -->
+  <div class="login-header">
+    <div class="login-icon-wrap">
+      <i class="bi bi-file-earmark-text login-doc-icon"></i>
+      <span class="login-check"><i class="bi bi-check-lg"></i></span>
+    </div>
+    <div class="login-title">
+      <span style="color:rgba(255,255,255,0.85)">Trans</span><span style="color:#fff;font-weight:900">Crypts</span>
+    </div>
+    <div class="login-subtitle">Resume Database — Please sign in</div>
+  </div>
+
+  <!-- Body -->
+  <div class="login-body">
+
+    <!-- Flash messages -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }} alert-dismissible fade show mb-4 py-2 px-3" style="font-size:0.9rem; border-radius:10px;">
+            <i class="bi bi-{{ 'check-circle-fill' if category == 'success' else 'exclamation-triangle-fill' }} me-2"></i>
+            {{ message }}
+            <button type="button" class="btn-close btn-sm" data-bs-dismiss="alert"></button>
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <form method="POST" action="{{ url_for('login') }}" autocomplete="on">
+      <input type="hidden" name="next" value="{{ next }}" />
+
+      <div class="mb-3">
+        <label for="username" class="form-label">Username</label>
+        <div class="input-group">
+          <span class="input-group-text"><i class="bi bi-person-fill"></i></span>
+          <input
+            type="text"
+            id="username"
+            name="username"
+            class="form-control"
+            placeholder="Enter your username"
+            autocomplete="username"
+            autofocus
+            required
+          />
+        </div>
+      </div>
+
+      <div class="mb-4">
+        <label for="password" class="form-label">Password</label>
+        <div class="input-group">
+          <span class="input-group-text"><i class="bi bi-lock-fill"></i></span>
+          <input
+            type="password"
+            id="password"
+            name="password"
+            class="form-control"
+            placeholder="Enter your password"
+            autocomplete="current-password"
+            required
+          />
+          <button type="button" class="btn btn-outline-secondary" id="togglePw"
+                  onclick="togglePassword()" title="Show/hide password"
+                  style="border-left:none; border-radius:0 10px 10px 0;">
+            <i class="bi bi-eye" id="togglePwIcon"></i>
+          </button>
+        </div>
+      </div>
+
+      <button type="submit" class="btn btn-signin w-100">
+        <i class="bi bi-box-arrow-in-right me-2"></i>Sign In
+      </button>
+    </form>
+
+    <div class="footer-text">
+      <i class="bi bi-shield-lock me-1"></i>
+      All data is stored locally on this computer. Access is restricted to authorized users only.
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+function togglePassword() {
+  const pw = document.getElementById('password');
+  const icon = document.getElementById('togglePwIcon');
+  if (pw.type === 'password') {
+    pw.type = 'text';
+    icon.className = 'bi bi-eye-slash';
+  } else {
+    pw.type = 'password';
+    icon.className = 'bi bi-eye';
+  }
+}
+</script>
+</body>
+</html>

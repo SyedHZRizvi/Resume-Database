@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Add New Resume — Resume Database</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
+  <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet" />
+</head>
+<body>
+
+<!-- ── Navbar ─────────────────────────────────────────────────────────────── -->
+<nav class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm">
+  <div class="container-fluid px-4">
+    <a class="navbar-brand tc-logo" href="{{ url_for('index') }}">
+      <span class="tc-logo-icon-wrap">
+        <i class="bi bi-file-earmark-text tc-doc"></i>
+        <span class="tc-check"><i class="bi bi-check-lg"></i></span>
+      </span>
+      <span class="tc-logo-text">
+        <span class="tc-trans">Trans</span><span class="tc-crypts">Crypts</span>
+      </span>
+    </a>
+    <div class="ms-auto d-flex align-items-center gap-2">
+      <a href="{{ url_for('index') }}" class="btn btn-home" title="Home">
+        <i class="bi bi-house-fill me-1"></i> Home
+      </a>
+      {% if require_login %}
+      <div class="dropdown">
+        <button class="btn btn-outline-light dropdown-toggle d-flex align-items-center gap-2"
+                type="button" data-bs-toggle="dropdown">
+          <i class="bi bi-person-circle"></i>
+          <span class="d-none d-lg-inline">{{ session.full_name }}</span>
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end shadow">
+          <li><h6 class="dropdown-header">{{ session.username }}</h6></li>
+          <li><a class="dropdown-item" href="{{ url_for('change_password') }}">
+            <i class="bi bi-shield-lock me-2 text-muted"></i>Change Password</a></li>
+          {% if session.user_role == 'admin' %}
+            <li><a class="dropdown-item" href="{{ url_for('manage_users') }}">
+              <i class="bi bi-people-fill me-2 text-muted"></i>Manage Users</a></li>
+          {% endif %}
+          <li><hr class="dropdown-divider"></li>
+          <li>
+            <form method="POST" action="{{ url_for('logout') }}" class="d-inline">
+              <button type="submit" class="dropdown-item text-danger">
+                <i class="bi bi-box-arrow-right me-2"></i>Sign Out
+              </button>
+            </form>
+          </li>
+        </ul>
+      </div>
+      {% endif %}
+      <button type="button" class="btn btn-danger fw-semibold px-3" onclick="showShutdownModal()">
+        <i class="bi bi-power me-1"></i> Close Program
+      </button>
+    </div>
+  </div>
+</nav>
+
+<div class="container py-5" style="max-width: 860px;">
+
+  <!-- ── Page Header ──────────────────────────────────────────────────────── -->
+  <div class="mb-4">
+    <h2 class="fw-bold text-dark mb-1">
+      <i class="bi bi-person-plus-fill text-primary me-2"></i>Add New Resume
+    </h2>
+    <p class="text-muted mb-0">Fill in the applicant's details below. Fields marked with <span class="text-danger">*</span> are required.</p>
+  </div>
+
+  <!-- ── Flash Messages ───────────────────────────────────────────────────── -->
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for category, message in messages %}
+        <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }} alert-dismissible fade show shadow-sm">
+          <i class="bi bi-{{ 'check-circle-fill' if category == 'success' else 'exclamation-triangle-fill' }} me-2"></i>
+          {{ message }}
+          <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  <!-- ── Form ─────────────────────────────────────────────────────────────── -->
+  <form method="POST" enctype="multipart/form-data" novalidate id="addForm">
+    <!-- Set by JS when user confirms a contact-info duplicate via the modal -->
+    <input type="hidden" id="confirmedDuplicate" name="confirmed_duplicate" value="">
+    <!-- Set by JS when user chooses "Update existing record" via the modal -->
+    <input type="hidden" id="updateExistingId" name="update_existing_id" value="">
+
+    <!-- Section 1: Personal Information -->
+    <div class="card border-0 shadow-sm mb-4">
+      <div class="card-header bg-white py-3">
+        <h5 class="mb-0 fw-semibold">
+          <span class="step-badge bg-primary text-white me-2">1</span>
+          Personal Information
+        </h5>
+      </div>
+      <div class="card-body p-4">
+        <div class="row g-3">
+
+          <!-- Full Name -->
+          <div class="col-12 col-md-6">
+            <label class="form-label fw-semibold" for="name">
+              Full Name <span class="text-danger">*</span>
+            </label>
+            <input
+              type="text"
+              class="form-control form-control-lg"
+              id="name"
+              name="name"
+              placeholder="e.g. Sarah Johnson"
+              value="{{ form.get('name', '') }}"
+              required
+            />
+            <div class="form-text">Enter the applicant's full name as it appears on their resume.</div>
+          </div>
+
+          <!-- Email -->
+          <div class="col-12 col-md-6">
+            <label class="form-label fw-semibold" for="email">
+              Email Address
+            </label>
+            <input
+              type="email"
+              class="form-control form-control-lg"
+              id="email"
+              name="email"
+              placeholder="e.g. sarah@email.com"
+              value="{{ form.get('email', '') }}"
+            />
+          </div>
+
+          <!-- Phone -->
+          <div class="col-12 col-md-6">
+            <label class="form-label fw-semibold" for="phone">
+              Phone Number
+            </label>
+            <input
+              type="tel"
+              class="form-control form-control-lg"
+              id="phone"
+              name="phone"
+              placeholder="e.g. +1 555 123 4567"
+              value="{{ form.get('phone', '') }}"
+            />
+          </div>
+
+          <!-- LinkedIn URL -->
+          <div class="col-12 col-md-6">
+            <label class="form-label fw-semibold" for="linkedin_url">
+              LinkedIn URL
+            </label>
+            <div class="input-group input-group-lg">
+              <span class="input-group-text">
+                <i class="bi bi-linkedin text-primary"></i>
+              </span>
+              <input
+                type="url"
+                class="form-control form-control-lg"
+                id="linkedin_url"
+                name="linkedin_url"
+                placeholder="https://linkedin.com/in/username"
+                value="{{ form.get('linkedin_url', '') }}"
+              />
+            </div>
+          </div>
+
+          <!-- GitHub URL -->
+          <div class="col-12 col-md-6">
+            <label class="form-label fw-semibold" for="github_url">
+              GitHub URL
+            </label>
+            <div class="input-group input-group-lg">
+              <span class="input-group-text">
+                <i class="bi bi-github text-dark"></i>
+              </span>
+              <input
+                type="url"
+                class="form-control form-control-lg"
+                id="github_url"
+                name="github_url"
+                placeholder="https://github.com/username"
+                value="{{ form.get('github_url', '') }}"
+              />
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- Section 2: Professional Details -->
+    <div class="card border-0 shadow-sm mb-4">
+      <div class="card-header bg-white py-3">
+        <h5 class="mb-0 fw-semibold">
+          <span class="step-badge bg-primary text-white me-2">2</span>
+          Professional Details
+        </h5>
+      </div>
+      <div class="card-body p-4">
+        <div class="row g-3">
+
+          <!-- Specialty -->
+          <div class="col-12 col-md-6">
+            <label class="form-label fw-semibold" for="specialty">
+              Specialty / Field <span class="text-danger">*</span>
+            </label>
+            <input
+              type="text"
+              class="form-control form-control-lg"
+              id="specialty"
+              name="specialty"
+              placeholder="e.g. Software Engineering, Accounting, Marketing…"
+              value="{{ form.get('specialty', '') }}"
+              required
+              list="specialtyList"
+            />
+            <datalist id="specialtyList">
+              <option value="IT Administration & DevOps">
+              <option value="Network Engineering">
+              <option value="Database Administration">
+              <option value="Cybersecurity">
+              <option value="IT Support">
+              <option value="Software Engineering">
+              <option value="Data Science">
+              <option value="Data Engineering">
+              <option value="Data Analytics">
+              <option value="Machine Learning">
+              <option value="Product Management">
+              <option value="Project Management">
+              <option value="Graphic Design">
+              <option value="Marketing">
+              <option value="Finance & Accounting">
+              <option value="Human Resources">
+              <option value="Sales">
+              <option value="Legal">
+              <option value="Healthcare">
+              <option value="Education">
+              <option value="Civil Engineering">
+              <option value="Mechanical Engineering">
+              <option value="Electrical Engineering">
+              <option value="Architecture">
+              <option value="Supply Chain & Logistics">
+              <option value="Customer Service">
+              <option value="Business Development">
+              <option value="Operations">
+            </datalist>
+            <div class="form-text">The applicant's primary area of expertise or job role.</div>
+          </div>
+
+          <!-- Years of Experience -->
+          <div class="col-12 col-md-6">
+            <label class="form-label fw-semibold" for="years_experience">
+              Years of Experience
+            </label>
+            <div class="input-group input-group-lg">
+              <input
+                type="number"
+                class="form-control"
+                id="years_experience"
+                name="years_experience"
+                placeholder="0"
+                min="0"
+                max="60"
+                value="{{ form.get('years_experience', '0') }}"
+              />
+              <span class="input-group-text text-muted">years</span>
+            </div>
+            <div class="form-text">Enter 0 for fresh graduates or entry-level applicants.</div>
+          </div>
+
+          <!-- Highest Education -->
+          <div class="col-12 col-md-6">
+            <label class="form-label fw-semibold" for="highest_education">
+              Highest Education
+            </label>
+            <select class="form-select form-select-lg" id="highest_education" name="highest_education">
+              <option value="" {{ 'selected' if not form.get('highest_education') }}>— Select education level —</option>
+              <option value="High School Diploma"           {{ 'selected' if form.get('highest_education') == 'High School Diploma' }}>High School Diploma</option>
+              <option value="Associate Degree"              {{ 'selected' if form.get('highest_education') == 'Associate Degree' }}>Associate Degree</option>
+              <option value="Bachelor's Degree"             {{ 'selected' if form.get('highest_education') == "Bachelor's Degree" }}>Bachelor's Degree</option>
+              <option value="Master's Degree"               {{ 'selected' if form.get('highest_education') == "Master's Degree" }}>Master's Degree</option>
+              <option value="MBA"                           {{ 'selected' if form.get('highest_education') == 'MBA' }}>MBA</option>
+              <option value="PhD / Doctorate"               {{ 'selected' if form.get('highest_education') == 'PhD / Doctorate' }}>PhD / Doctorate</option>
+              <option value="Professional Certification"    {{ 'selected' if form.get('highest_education') == 'Professional Certification' }}>Professional Certification</option>
+              <option value="Diploma / Vocational Training" {{ 'selected' if form.get('highest_education') == 'Diploma / Vocational Training' }}>Diploma / Vocational Training</option>
+              <option value="Self-Taught"                   {{ 'selected' if form.get('highest_education') == 'Self-Taught' }}>Self-Taught / Bootcamp</option>
+            </select>
+          </div>
+
+          <!-- Key Skills -->
+          <div class="col-12">
+            <label class="form-label fw-semibold" for="skills">
+              Key Skills
+            </label>
+            <input
+              type="text"
+              class="form-control form-control-lg"
+              id="skills"
+              name="skills"
+              placeholder="e.g. Python, Excel, Project Management, Communication"
+              value="{{ form.get('skills', '') }}"
+            />
+            <div class="form-text">
+              <i class="bi bi-lightbulb text-warning me-1"></i>
+              Separate skills with commas. These will appear as tags and are searchable.
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- Section 3: Resume File + AI Auto-Fill -->
+    <div class="card border-0 shadow-sm mb-4">
+      <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+        <h5 class="mb-0 fw-semibold">
+          <span class="step-badge bg-primary text-white me-2">3</span>
+          Resume File
+        </h5>
+        <span class="badge bg-success-subtle text-success border border-success-subtle px-3 py-2">
+          <i class="bi bi-stars me-1"></i> AI Auto-Fill Enabled
+        </span>
+      </div>
+      <div class="card-body p-4">
+
+        <!-- Upload input -->
+        <label class="form-label fw-semibold" for="resume_file">
+          Upload Resume File
+        </label>
+        <div class="upload-area" id="uploadArea">
+          <input
+            type="file"
+            class="form-control form-control-lg"
+            id="resume_file"
+            name="resume_file"
+            accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tiff,.tif"
+          />
+          <div class="upload-hint mt-2">
+            <i class="bi bi-cloud-arrow-up-fill text-primary fs-3 d-block mb-1"></i>
+            <span class="text-muted">
+              PDF, DOC, DOCX, JPG, PNG, TIFF &amp; more — scanned files supported — Max 32 MB
+            </span>
+          </div>
+        </div>
+
+        <!-- File selected preview + Auto-Fill button -->
+        <div class="mt-3" id="filePreview" style="display:none">
+          <div class="d-flex flex-column flex-md-row align-items-md-center gap-3">
+            <div class="alert alert-success d-flex align-items-center mb-0 flex-grow-1">
+              <i class="bi bi-file-earmark-check-fill me-2 fs-5"></i>
+              <span id="filePreviewName"></span>
+            </div>
+            <button type="button" class="btn btn-success btn-lg px-4 fw-semibold flex-shrink-0"
+                    id="autoFillBtn" onclick="autoFillFromResume()">
+              <i class="bi bi-stars me-2"></i>Auto-Fill from Resume
+            </button>
+          </div>
+          <div class="form-text mt-1">
+            <i class="bi bi-info-circle me-1 text-primary"></i>
+            Click <strong>Auto-Fill</strong> to let AI read the resume and fill in the fields below automatically.
+          </div>
+        </div>
+
+        <!-- AI parsing status messages -->
+        <div id="parseStatus" class="mt-3" style="display:none"></div>
+
+      </div>
+    </div>
+
+    <!-- Section 4: Additional Notes -->
+    <div class="card border-0 shadow-sm mb-4">
+      <div class="card-header bg-white py-3">
+        <h5 class="mb-0 fw-semibold">
+          <span class="step-badge bg-secondary text-white me-2">4</span>
+          Additional Notes
+          <span class="badge bg-light text-muted fw-normal ms-2">Optional</span>
+        </h5>
+      </div>
+      <div class="card-body p-4">
+        <label class="form-label fw-semibold" for="notes">Internal Notes</label>
+        <textarea
+          class="form-control"
+          id="notes"
+          name="notes"
+          rows="4"
+          placeholder="e.g. Strong candidate for the senior role. Referred by John. Available from June 2024."
+        >{{ form.get('notes', '') }}</textarea>
+        <div class="form-text">These notes are for internal use only and are not shared with the applicant.</div>
+      </div>
+    </div>
+
+    <!-- Submit Buttons -->
+    <div class="d-flex gap-3 justify-content-end">
+      <a href="{{ url_for('index') }}" class="btn btn-outline-secondary btn-lg px-4">
+        <i class="bi bi-x-circle me-1"></i> Cancel
+      </a>
+      <button type="submit" class="btn btn-primary btn-lg px-5" id="submitBtn">
+        <i class="bi bi-save-fill me-2"></i> Save Resume
+      </button>
+    </div>
+
+  </form>
+</div>
+
+<!-- ── AI Setup Guide Modal ────────────────────────────────────────────────── -->
+<div class="modal fade" id="aiSetupModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title fw-bold">
+          <i class="bi bi-stars text-warning me-2"></i>Set Up AI Auto-Fill — 3 Easy Steps
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted mb-4">The AI feature needs a free API key from Anthropic (the company that makes the AI). It takes about 3 minutes to set up and costs almost nothing to use.</p>
+
+        <div class="d-flex flex-column gap-3">
+          <div class="d-flex gap-3 align-items-start p-3 rounded-3 bg-light">
+            <div class="step-badge bg-primary text-white flex-shrink-0 mt-1" style="width:32px;height:32px;font-size:1rem">1</div>
+            <div>
+              <div class="fw-semibold">Get a free API key</div>
+              <div class="text-muted small mb-2">Open this link, sign up with your email, then go to <strong>API Keys → Create Key</strong></div>
+              <a href="https://console.anthropic.com/" target="_blank" class="btn btn-sm btn-outline-primary">
+                <i class="bi bi-box-arrow-up-right me-1"></i> Open console.anthropic.com
+              </a>
+            </div>
+          </div>
+
+          <div class="d-flex gap-3 align-items-start p-3 rounded-3 bg-light">
+            <div class="step-badge bg-primary text-white flex-shrink-0 mt-1" style="width:32px;height:32px;font-size:1rem">2</div>
+            <div>
+              <div class="fw-semibold">Paste your key into config.py</div>
+              <div class="text-muted small mb-2">Click the button below to open the settings file in Notepad, then replace <code>your-api-key-here</code> with your key and press <strong>Ctrl+S</strong> to save.</div>
+              <button type="button" class="btn btn-sm btn-warning fw-semibold" onclick="openConfig()">
+                <i class="bi bi-pencil-fill me-1"></i> Open config.py in Notepad
+              </button>
+              <div id="configOpenStatus" class="mt-2" style="display:none"></div>
+            </div>
+          </div>
+
+          <div class="d-flex gap-3 align-items-start p-3 rounded-3 bg-light">
+            <div class="step-badge bg-primary text-white flex-shrink-0 mt-1" style="width:32px;height:32px;font-size:1rem">3</div>
+            <div>
+              <div class="fw-semibold">Restart the app</div>
+              <div class="text-muted small">Close this browser tab, double-click <strong>START_APP.bat</strong> on your desktop again, and the AI Auto-Fill will be ready.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="alert alert-info mt-4 mb-0">
+          <i class="bi bi-info-circle-fill me-2"></i>
+          <strong>Cost:</strong> Anthropic gives free credits to start. Parsing one resume costs less than <strong>$0.001</strong> — so even 10,000 resumes would cost less than $10.
+        </div>
+      </div>
+      <div class="modal-footer border-0">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Duplicate Warning Modal ────────────────────────────────────────────── -->
+<div class="modal fade" id="duplicateModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title fw-bold">
+          <i class="bi bi-exclamation-triangle-fill text-warning me-2"></i>
+          Possible Duplicate Detected
+        </h5>
+      </div>
+      <div class="modal-body">
+
+        <!-- Hash duplicate (hard block) -->
+        <div id="dupHashSection" style="display:none">
+          <div class="alert alert-danger d-flex gap-3 align-items-start mb-3">
+            <i class="bi bi-ban fs-4 flex-shrink-0 mt-1"></i>
+            <div>
+              <strong>Upload Blocked — Identical File Already Exists</strong><br>
+              <span class="text-muted small">This exact file (byte-for-byte identical, regardless of filename) is already saved in the database.</span>
+            </div>
+          </div>
+          <div id="dupHashDetail" class="p-3 rounded-3 bg-light small mb-2"></div>
+          <p class="text-muted small mb-0">To add this person again (e.g. a new role application), please upload a <strong>different resume file</strong>.</p>
+        </div>
+
+        <!-- Contact info duplicate (soft warning — two options) -->
+        <div id="dupContactSection" style="display:none">
+          <div class="alert alert-warning d-flex gap-3 align-items-start mb-3">
+            <i class="bi bi-person-fill-exclamation fs-4 flex-shrink-0 mt-1"></i>
+            <div>
+              <strong>An applicant with the same name and contact details already exists</strong><br>
+              <span class="text-muted small">Please choose what you'd like to do — update the existing record, or add a new one.</span>
+            </div>
+          </div>
+
+          <!-- Matching records table -->
+          <div id="dupContactTable" class="mb-4"></div>
+
+          <!-- Option A — Update existing -->
+          <div class="border rounded-3 p-3 mb-3 bg-light">
+            <p class="fw-semibold mb-1">
+              <i class="bi bi-arrow-repeat text-primary me-1"></i>
+              Option A — Update Existing Resume
+            </p>
+            <p class="text-muted small mb-2">
+              Replace the existing record's resume file with this new one. The old file is
+              permanently deleted. All hiring decisions, interview records and notes are kept.
+            </p>
+            <div id="dupUpdateButtons" class="d-flex flex-wrap gap-2"></div>
+          </div>
+
+          <!-- Option B — New application -->
+          <div class="border rounded-3 p-3 bg-light">
+            <p class="fw-semibold mb-1">
+              <i class="bi bi-file-earmark-plus text-success me-1"></i>
+              Option B — Add as New Application
+            </p>
+            <p class="text-muted small mb-2">
+              Create a separate record for this person — for example, they are applying for a
+              completely different role with a different, updated resume.
+            </p>
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="dupConfirmCheck">
+              <label class="form-check-label fw-semibold small" for="dupConfirmCheck">
+                I confirm this is a <strong>new application for a different role</strong> and not an accidental re-upload.
+              </label>
+            </div>
+          </div>
+        </div>
+
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-secondary px-4" data-bs-dismiss="modal">
+          <i class="bi bi-arrow-left me-1"></i> Go Back
+        </button>
+        <button type="button" class="btn btn-warning px-4 fw-semibold" id="dupProceedBtn"
+                style="display:none" disabled onclick="proceedWithUpload()">
+          <i class="bi bi-upload me-2"></i> Upload Anyway
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Shutdown Modal ──────────────────────────────────────────────────────── -->
+<div class="modal fade" id="shutdownModal" tabindex="-1" data-bs-backdrop="static">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title fw-bold"><i class="bi bi-power text-danger me-2"></i>Close Program</h5>
+      </div>
+      <div class="modal-body py-3">
+        <div class="alert alert-success d-flex align-items-center mb-3">
+          <i class="bi bi-shield-fill-check fs-5 me-2"></i>
+          <div><strong>All data is saved.</strong> Every record is stored safely in the database.</div>
+        </div>
+        <p class="mb-0 text-muted">Are you sure you want to close the Resume Database?</p>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-secondary px-4" data-bs-dismiss="modal">
+          <i class="bi bi-arrow-left me-1"></i> Go Back
+        </button>
+        <button type="button" class="btn btn-danger px-4" id="confirmShutdownBtn" onclick="doShutdown()">
+          <i class="bi bi-power me-1"></i> Yes, Close Program
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+function showShutdownModal() { new bootstrap.Modal(document.getElementById('shutdownModal')).show(); }
+function doShutdown() {
+  const btn = document.getElementById('confirmShutdownBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span> Closing…';
+  fetch('/shutdown', { method: 'POST' }).finally(() => {
+    document.body.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:Segoe UI,sans-serif;background:#f1f5f9;"><div style="background:white;border-radius:16px;padding:48px 56px;box-shadow:0 8px 32px rgba(0,0,0,0.1);text-align:center;max-width:420px;"><div style="font-size:3.5rem;color:#16a34a;margin-bottom:16px;">&#x2705;</div><h3 style="font-weight:700;color:#1e293b;margin-bottom:8px;">Program Closed</h3><p style="color:#64748b;margin-bottom:0;">All data has been saved successfully.<br>You can now close this browser tab.</p></div></div>`;
+  });
+}
+
+// ── File selection — show preview + Auto-Fill button ──────────────────────────
+document.getElementById('resume_file').addEventListener('change', function () {
+  const preview = document.getElementById('filePreview');
+  const nameEl  = document.getElementById('filePreviewName');
+  const status  = document.getElementById('parseStatus');
+  if (this.files.length > 0) {
+    const file = this.files[0];
+    const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
+    nameEl.textContent = `${file.name}  (${sizeMB} MB)`;
+    preview.style.display = 'block';
+    status.style.display  = 'none';
+    clearAutoFillHighlights();
+  } else {
+    preview.style.display = 'none';
+  }
+});
+
+// ── Auto-Fill from Resume ─────────────────────────────────────────────────────
+async function autoFillFromResume() {
+  const fileInput = document.getElementById('resume_file');
+  if (!fileInput.files.length) return;
+
+  const btn    = document.getElementById('autoFillBtn');
+  const status = document.getElementById('parseStatus');
+
+  // Show loading
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span> Reading resume…';
+  status.style.display = 'block';
+  status.innerHTML = `
+    <div class="alert alert-info d-flex align-items-center gap-3 mb-0">
+      <span class="spinner-border spinner-border-sm text-primary flex-shrink-0"></span>
+      <span><strong>AI is reading your resume…</strong> This takes a few seconds. Please wait.</span>
+    </div>`;
+
+  try {
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+
+    const response = await fetch('/parse-resume', { method: 'POST', body: formData });
+    const data     = await response.json();
+
+    if (!response.ok || data.error) {
+      status.innerHTML = `
+        <div class="alert alert-warning d-flex align-items-start gap-2 mb-0">
+          <i class="bi bi-exclamation-triangle-fill flex-shrink-0 mt-1"></i>
+          <div><strong>Note:</strong> ${data.error || 'Unknown error.'}<br>
+          <small class="text-muted">Please fill in the fields manually.</small></div>
+        </div>`;
+      return;
+    }
+
+    // Fill each field and track how many were filled
+    let filled = 0;
+    const fieldMap = {
+      name:              data.name,
+      email:             data.email,
+      phone:             data.phone,
+      specialty:         data.specialty,
+      years_experience:  data.years_experience,
+      skills:            data.skills,
+      notes:             data.notes,
+    };
+
+    for (const [id, value] of Object.entries(fieldMap)) {
+      const el = document.getElementById(id);
+      if (el && value !== undefined && value !== null && String(value).trim() !== '') {
+        el.value = String(value).trim();
+        el.classList.add('auto-filled');
+        filled++;
+      }
+    }
+
+    // Education dropdown
+    if (data.highest_education) {
+      const sel = document.getElementById('highest_education');
+      for (const opt of sel.options) {
+        if (opt.value === data.highest_education) {
+          sel.value = data.highest_education;
+          sel.classList.add('auto-filled');
+          filled++;
+          break;
+        }
+      }
+    }
+
+    status.innerHTML = `
+      <div class="alert alert-success d-flex align-items-start gap-2 mb-0">
+        <i class="bi bi-stars flex-shrink-0 mt-1 fs-5"></i>
+        <div>
+          <strong>✓ ${filled} fields filled automatically!</strong>
+          <br><small class="text-muted">Please review the information below and correct anything if needed before saving.</small>
+        </div>
+      </div>`;
+
+  } catch (err) {
+    status.innerHTML = `
+      <div class="alert alert-danger mb-0">
+        <i class="bi bi-wifi-off me-2"></i><strong>Connection error.</strong>
+        Make sure the app is still running and try again.
+      </div>`;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-stars me-2"></i>Auto-Fill from Resume';
+  }
+}
+
+function clearAutoFillHighlights() {
+  document.querySelectorAll('.auto-filled').forEach(el => el.classList.remove('auto-filled'));
+}
+
+async function openConfig() {
+  const statusEl = document.getElementById('configOpenStatus');
+  try {
+    const r = await fetch('/open-config', { method: 'POST' });
+    if (r.ok) {
+      statusEl.style.display = 'block';
+      statusEl.innerHTML = '<span class="text-success"><i class="bi bi-check-circle-fill me-1"></i>Notepad opened! Paste your key, press Ctrl+S, then restart the app.</span>';
+    }
+  } catch(e) {
+    statusEl.style.display = 'block';
+    statusEl.innerHTML = '<span class="text-danger">Could not open Notepad. Please open config.py manually from D:\\ResumeDatabase\\</span>';
+  }
+}
+
+// ── Duplicate detection + form submit ────────────────────────────────────────
+let _dupCheckPassed = false;   // set to true after user confirms a soft duplicate
+const dupModal = new bootstrap.Modal(document.getElementById('duplicateModal'));
+
+// Compute SHA-256 of a File object using the Web Crypto API (runs in-browser,
+// no round-trip needed just to hash). Returns a hex string.
+async function sha256Hex(file) {
+  const buf    = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest('SHA-256', buf);
+  return Array.from(new Uint8Array(digest))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+// Called when the user ticks the confirmation checkbox.
+document.getElementById('dupConfirmCheck').addEventListener('change', function () {
+  document.getElementById('dupProceedBtn').disabled = !this.checked;
+});
+
+// Called by the "Upload Anyway" button — user confirmed it's a new application.
+function proceedWithUpload() {
+  document.getElementById('confirmedDuplicate').value = '1';  // tell server it was confirmed
+  document.getElementById('updateExistingId').value   = '';
+  _dupCheckPassed = true;
+  dupModal.hide();
+  setTimeout(() => document.getElementById('addForm').requestSubmit(), 200);
+}
+
+// Called when user clicks "Update [Name]'s Resume" — set the target ID and submit.
+function selectUpdateTarget(id, name) {
+  document.getElementById('updateExistingId').value = id;
+  _dupCheckPassed = true;
+  dupModal.hide();
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = true;
+  btn.innerHTML = `<span class="spinner-border spinner-border-sm me-2"></span> Updating ${name}'s record…`;
+  setTimeout(() => document.getElementById('addForm').requestSubmit(), 200);
+}
+
+document.getElementById('addForm').addEventListener('submit', async function (e) {
+  // If we already confirmed a soft duplicate, just let it through.
+  if (_dupCheckPassed) {
+    const btn = document.getElementById('submitBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span> Saving…';
+    return;
+  }
+
+  e.preventDefault();   // hold the submit while we do the AJAX check
+
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span> Checking…';
+
+  // ── Gather data for the check ─────────────────────────────────────────────
+  const name  = (document.getElementById('name').value  || '').trim();
+  const email = (document.getElementById('email').value || '').trim();
+  const phone = (document.getElementById('phone').value || '').trim();
+
+  let fileHash = null;
+  const fileInput = document.getElementById('resume_file');
+  if (fileInput.files.length > 0) {
+    try { fileHash = await sha256Hex(fileInput.files[0]); } catch (_) {}
+  }
+
+  try {
+    const resp = await fetch('/check-duplicate', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ name, email, phone, file_hash: fileHash }),
+    });
+    const data = await resp.json();
+
+    const hasHashDup    = !!data.hash_match;
+    const hasContactDup = data.contact_matches && data.contact_matches.length > 0;
+
+    if (!hasHashDup && !hasContactDup) {
+      // No duplicate — proceed normally
+      _dupCheckPassed = true;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span> Saving…';
+      this.submit();
+      return;
+    }
+
+    // Show the appropriate section(s) in the modal
+    document.getElementById('dupHashSection').style.display    = hasHashDup    ? 'block' : 'none';
+    document.getElementById('dupContactSection').style.display = hasContactDup ? 'block' : 'none';
+    document.getElementById('dupConfirmCheck').checked         = false;
+    document.getElementById('dupProceedBtn').disabled          = true;
+
+    if (hasHashDup) {
+      const m = data.hash_match;
+      document.getElementById('dupHashDetail').innerHTML =
+        `<strong>Existing record:</strong> ${m.name} &nbsp;·&nbsp; Added on ${m.date_added} &nbsp;·&nbsp;
+         <a href="/view/${m.id}" target="_blank" class="text-primary">View Record</a>`;
+      // Hard block — hide the "proceed" button
+      document.getElementById('dupProceedBtn').style.display = 'none';
+    } else {
+      document.getElementById('dupProceedBtn').style.display = 'inline-block';
+    }
+
+    if (hasContactDup) {
+      let rows = data.contact_matches.map(r =>
+        `<tr>
+           <td><a href="/view/${r.id}" target="_blank" class="text-primary fw-semibold">${r.name}</a></td>
+           <td>${r.email || '—'}</td>
+           <td>${r.phone || '—'}</td>
+           <td>${r.specialty || '—'}</td>
+           <td>${r.date_added || '—'}</td>
+         </tr>`
+      ).join('');
+      document.getElementById('dupContactTable').innerHTML = `
+        <table class="table table-sm table-bordered align-middle mb-0 small">
+          <thead class="table-light">
+            <tr><th>Name</th><th>Email</th><th>Phone</th><th>Specialty</th><th>Date Added</th></tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+
+      // Build "Update their resume" button(s) — one per matched record
+      let updateBtns = data.contact_matches.map(r => {
+        const safeName = r.name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+        return `<button type="button" class="btn btn-sm btn-primary fw-semibold"
+                        onclick="selectUpdateTarget(${r.id}, '${safeName}')">
+                  <i class="bi bi-arrow-repeat me-1"></i>Update <strong>${r.name}</strong>'s Resume
+                </button>`;
+      }).join('');
+      document.getElementById('dupUpdateButtons').innerHTML = updateBtns;
+    }
+
+    dupModal.show();
+
+  } catch (err) {
+    // AJAX check failed — let the server-side safety nets handle it
+    // Do NOT set confirmedDuplicate; server will catch real duplicates
+    _dupCheckPassed = true;
+    this.submit();
+  } finally {
+    // Re-enable the button so the user can try again after closing the modal
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-save-fill me-2"></i> Save Resume';
+  }
+});
+</script>
+</body>
+</html>

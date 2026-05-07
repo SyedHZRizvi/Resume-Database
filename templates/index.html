@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TransCrypts — Resume Database</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
+  <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet" />
+  <style>
+    .filter-card { border-left: 4px solid var(--tc-green, #6DC49A); }
+    .active-chip {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: #e8f7f0; border: 1px solid #6DC49A; color: #2d6b4a;
+      border-radius: 20px; padding: 3px 10px 3px 12px; font-size: .82rem;
+      font-weight: 600; white-space: nowrap;
+    }
+    .active-chip .rm { cursor: pointer; font-size: 1rem; line-height: 1;
+      color: #2d6b4a; text-decoration: none; }
+    .active-chip .rm:hover { color: #c0392b; }
+    .filter-label { font-size: .8rem; font-weight: 600; color: #6b7280;
+      text-transform: uppercase; letter-spacing: .04em; margin-bottom: 3px; }
+    .exp-range { display: flex; align-items: center; gap: 6px; }
+    .exp-range input { width: 70px !important; }
+    /* ── Hiring status badges in the table ─── */
+    .status-open      { background:#f1f5f9; color:#64748b; border:1px solid #cbd5e1; }
+    .status-interview { background:#dbeafe; color:#1e40af; border:1px solid #93c5fd; }
+    .status-hired     { background:#dcfce7; color:#166534; border:1px solid #86efac; }
+    .status-rejected  { background:#fee2e2; color:#991b1b; border:1px solid #fca5a5; }
+    .status-onhold    { background:#fef9c3; color:#854d0e; border:1px solid #fde68a; }
+  </style>
+</head>
+<body>
+
+<!-- ── Navbar ─────────────────────────────────────────────────────────────── -->
+<nav class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm">
+  <div class="container-fluid px-4">
+    <a class="navbar-brand tc-logo" href="{{ url_for('index') }}">
+      <span class="tc-logo-icon-wrap">
+        <i class="bi bi-file-earmark-text tc-doc"></i>
+        <span class="tc-check"><i class="bi bi-check-lg"></i></span>
+      </span>
+      <span class="tc-logo-text">
+        <span class="tc-trans">Trans</span><span class="tc-crypts">Crypts</span>
+      </span>
+    </a>
+    <div class="ms-auto d-flex align-items-center gap-2">
+      <a href="{{ url_for('staff_list') }}" class="btn btn-outline-light fw-semibold px-3">
+        <i class="bi bi-person-badge-fill me-1"></i> Staff Directory
+      </a>
+      {% if can_audit %}
+      <a href="{{ url_for('audit_log') }}" class="btn btn-outline-light fw-semibold px-3">
+        <i class="bi bi-journal-text me-1"></i> Audit Log
+      </a>
+      {% endif %}
+      {% if can_users %}
+      <a href="{{ url_for('manage_users') }}" class="btn btn-outline-light fw-semibold px-3">
+        <i class="bi bi-people-fill me-1"></i> Manage Users
+      </a>
+      {% endif %}
+      {% if can_add %}
+      <a href="{{ url_for('add_bulk') }}" class="btn btn-outline-light fw-semibold px-3">
+        <i class="bi bi-upload me-1"></i> Bulk Upload
+      </a>
+      <a href="{{ url_for('add_resume') }}" class="btn btn-light fw-semibold px-4">
+        <i class="bi bi-plus-circle-fill me-1"></i> Add Resume
+      </a>
+      {% endif %}
+      {% if require_login %}
+      <div class="dropdown">
+        <button class="btn btn-outline-light dropdown-toggle d-flex align-items-center gap-2"
+                type="button" data-bs-toggle="dropdown" aria-expanded="false">
+          <i class="bi bi-person-circle"></i>
+          <span class="d-none d-md-inline">{{ session.full_name }}</span>
+          <span class="badge bg-warning text-dark" style="font-size:.65rem">{{ ROLE_LABEL }}</span>
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end shadow">
+          <li><h6 class="dropdown-header">{{ session.username }}</h6></li>
+          <li><a class="dropdown-item" href="{{ url_for('change_password') }}">
+            <i class="bi bi-shield-lock me-2 text-muted"></i>Change Password</a></li>
+          {% if can_users %}
+            <li><a class="dropdown-item" href="{{ url_for('manage_users') }}">
+              <i class="bi bi-people-fill me-2 text-muted"></i>Manage Users</a></li>
+          {% endif %}
+          {% if can_audit %}
+            <li><a class="dropdown-item" href="{{ url_for('audit_log') }}">
+              <i class="bi bi-journal-text me-2 text-muted"></i>Audit Log</a></li>
+          {% endif %}
+          <li><hr class="dropdown-divider"></li>
+          <li>
+            <form method="POST" action="{{ url_for('logout') }}" class="d-inline">
+              <button type="submit" class="dropdown-item text-danger">
+                <i class="bi bi-box-arrow-right me-2"></i>Sign Out</button>
+            </form>
+          </li>
+        </ul>
+      </div>
+      {% endif %}
+      {% if can_shutdown %}
+      <button type="button" class="btn btn-danger fw-semibold px-3" onclick="showShutdownModal()">
+        <i class="bi bi-power me-1"></i> Close Program
+      </button>
+      {% endif %}
+    </div>
+  </div>
+</nav>
+
+<!-- ── Company Header ─────────────────────────────────────────────────────── -->
+<div class="company-header text-center py-3 border-bottom">
+  <span class="tc-logo justify-content-center">
+    <span class="tc-logo-icon-wrap">
+      <i class="bi bi-file-earmark-text tc-doc"></i>
+      <span class="tc-check"><i class="bi bi-check-lg"></i></span>
+    </span>
+    <span class="tc-logo-text">
+      <span class="tc-trans">Trans</span><span class="tc-crypts">Crypts</span>
+    </span>
+  </span>
+  <div class="text-muted small mt-1">Applicant Resume Database</div>
+</div>
+
+<div class="container-fluid px-4 py-4">
+
+  <!-- Flash Messages -->
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}{% for category, message in messages %}
+      <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }} alert-dismissible fade show shadow-sm" role="alert">
+        <i class="bi bi-{{ 'check-circle-fill' if category == 'success' else 'exclamation-triangle-fill' }} me-2"></i>
+        {{ message }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+      </div>
+    {% endfor %}{% endif %}
+  {% endwith %}
+
+  <!-- ── Stats ──────────────────────────────────────────────────────────── -->
+  <div class="row g-3 mb-4">
+    <div class="col-6 col-lg-3">
+      <div class="card stat-card border-0 shadow-sm h-100">
+        <div class="card-body d-flex align-items-center gap-3">
+          <div class="stat-icon bg-primary-subtle text-primary"><i class="bi bi-people-fill fs-4"></i></div>
+          <div>
+            <div class="stat-number text-primary">{{ total }}</div>
+            <div class="stat-label">Total Applicants</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-lg-3">
+      <div class="card stat-card border-0 shadow-sm h-100">
+        <div class="card-body d-flex align-items-center gap-3">
+          <div class="stat-icon bg-success-subtle text-success"><i class="bi bi-funnel-fill fs-4"></i></div>
+          <div>
+            <div class="stat-number text-success">{{ applicants|length }}</div>
+            <div class="stat-label">{{ 'Filtered Results' if any_filter else 'Showing All' }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       MULTI-FILTER PANEL
+       All filters work together with AND logic:
+       e.g. Specialty=Software Engineering AND Skills=Python AND Exp≥5
+  ═══════════════════════════════════════════════════════════════════════ -->
+  <div class="card border-0 shadow-sm mb-3 filter-card">
+    <div class="card-header bg-white py-2 d-flex align-items-center justify-content-between">
+      <span class="fw-semibold text-dark">
+        <i class="bi bi-funnel-fill text-primary me-2"></i>Search &amp; Filter
+        <span class="text-muted fw-normal small ms-1">— combine any filters below; results update together</span>
+      </span>
+      {% if any_filter %}
+        <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-danger">
+          <i class="bi bi-x-circle me-1"></i>Clear All Filters
+        </a>
+      {% endif %}
+    </div>
+    <div class="card-body pb-3 pt-3">
+      <form method="GET" action="{{ url_for('index') }}" id="filterForm">
+
+        <!-- Row 1: Keyword | Specialty | Skills -->
+        <div class="row g-2 mb-2">
+          <div class="col-12 col-md-4">
+            <div class="filter-label">Keyword (name / notes)</div>
+            <div class="input-group">
+              <span class="input-group-text bg-white"><i class="bi bi-search text-muted"></i></span>
+              <input type="text" name="q" class="form-control" placeholder="e.g. John, excellent communicator…"
+                     value="{{ q }}" />
+            </div>
+          </div>
+          <div class="col-12 col-md-4">
+            <div class="filter-label">Specialty / Field</div>
+            <div class="input-group">
+              <span class="input-group-text bg-white"><i class="bi bi-briefcase text-muted"></i></span>
+              <input type="text" name="specialty" class="form-control" id="specialtyInput"
+                     placeholder="e.g. Software Engineering"
+                     value="{{ f_specialty }}" list="specialtyList" />
+              <datalist id="specialtyList">
+                {% for s in specialties %}<option value="{{ s }}">{% endfor %}
+              </datalist>
+            </div>
+          </div>
+          <div class="col-12 col-md-4">
+            <div class="filter-label">Skills (comma-separated)</div>
+            <div class="input-group">
+              <span class="input-group-text bg-white"><i class="bi bi-tags text-muted"></i></span>
+              <input type="text" name="skills" class="form-control"
+                     placeholder="e.g. Python, AWS, Docker"
+                     value="{{ f_skills }}" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Row 2: Education | Exp range | Has File | Buttons -->
+        <div class="row g-2 align-items-end">
+          <div class="col-12 col-sm-6 col-md-3">
+            <div class="filter-label">Highest Education</div>
+            <select name="education" class="form-select">
+              <option value="">— Any Education —</option>
+              {% set edu_levels = [
+                  'High School Diploma', 'Diploma / Vocational Training',
+                  'Associate Degree', "Bachelor's Degree",
+                  "Master's Degree", 'MBA', 'PhD / Doctorate',
+                  'Professional Certification', 'Self-Taught'
+              ] %}
+              {% for lvl in edu_levels %}
+                <option value="{{ lvl }}" {{ 'selected' if f_education == lvl }}>{{ lvl }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-12 col-sm-6 col-md-3">
+            <div class="filter-label">Years of Experience</div>
+            <div class="exp-range">
+              <input type="number" name="exp_min" class="form-control text-center"
+                     placeholder="Min" min="0" max="50" value="{{ f_exp_min }}" />
+              <span class="text-muted small fw-semibold">to</span>
+              <input type="number" name="exp_max" class="form-control text-center"
+                     placeholder="Max" min="0" max="50" value="{{ f_exp_max }}" />
+              <span class="text-muted small">yrs</span>
+            </div>
+          </div>
+          <div class="col-12 col-sm-4 col-md-2">
+            <div class="filter-label">Resume File</div>
+            <select name="has_file" class="form-select">
+              <option value="" {{ 'selected' if f_has_file == '' }}>— Any —</option>
+              <option value="yes" {{ 'selected' if f_has_file == 'yes' }}>Has File</option>
+              <option value="no"  {{ 'selected' if f_has_file == 'no'  }}>No File</option>
+            </select>
+          </div>
+          <div class="col-12 col-sm-4 col-md-2">
+            <div class="filter-label">Hiring Status</div>
+            <select name="status" class="form-select">
+              <option value=""         {{ 'selected' if f_status == '' }}>— All —</option>
+              <option value="Open"             {{ 'selected' if f_status == 'Open' }}>Open / Under Review</option>
+              <option value="Interview Scheduled" {{ 'selected' if f_status == 'Interview Scheduled' }}>Interview Scheduled</option>
+              <option value="Hired"            {{ 'selected' if f_status == 'Hired' }}>Hired</option>
+              <option value="Rejected"         {{ 'selected' if f_status == 'Rejected' }}>Rejected</option>
+              <option value="On Hold"          {{ 'selected' if f_status == 'On Hold' }}>On Hold</option>
+            </select>
+          </div>
+          <div class="col-6 col-sm-4 col-md-1">
+            <div class="filter-label"><i class="bi bi-linkedin text-primary"></i> LinkedIn</div>
+            <select name="linkedin" class="form-select">
+              <option value="" {{ 'selected' if f_linkedin == '' }}>Any</option>
+              <option value="yes" {{ 'selected' if f_linkedin == 'yes' }}>Has</option>
+              <option value="no"  {{ 'selected' if f_linkedin == 'no'  }}>None</option>
+            </select>
+          </div>
+          <div class="col-6 col-sm-4 col-md-1">
+            <div class="filter-label"><i class="bi bi-github text-dark"></i> GitHub</div>
+            <select name="github" class="form-select">
+              <option value="" {{ 'selected' if f_github == '' }}>Any</option>
+              <option value="yes" {{ 'selected' if f_github == 'yes' }}>Has</option>
+              <option value="no"  {{ 'selected' if f_github == 'no'  }}>None</option>
+            </select>
+          </div>
+          <div class="col-12 col-sm-6 col-md-3 d-flex gap-2">
+            <button type="submit" class="btn btn-primary flex-grow-1">
+              <i class="bi bi-search me-1"></i> Apply Filters
+            </button>
+            {% if any_filter %}
+              <a href="{{ url_for('index') }}" class="btn btn-outline-secondary" title="Clear all">
+                <i class="bi bi-x-lg"></i>
+              </a>
+            {% endif %}
+          </div>
+        </div>
+
+      </form>
+    </div>
+
+    <!-- ── Active Filter Chips ─────────────────────────────────────────── -->
+    {% if any_filter %}
+    <div class="card-footer bg-white border-top-0 pt-0 pb-3 px-3 d-flex flex-wrap align-items-center gap-2">
+      <span class="text-muted small fw-semibold me-1">Active filters:</span>
+
+      {% if q %}
+        <span class="active-chip">
+          <i class="bi bi-search" style="font-size:.8rem"></i> Keyword: <em>{{ q }}</em>
+          <a class="rm" href="{{ url_for('index', specialty=f_specialty, skills=f_skills, education=f_education, exp_min=f_exp_min, exp_max=f_exp_max, has_file=f_has_file) }}" title="Remove">&times;</a>
+        </span>
+      {% endif %}
+
+      {% if f_specialty %}
+        <span class="active-chip">
+          <i class="bi bi-briefcase" style="font-size:.8rem"></i> Specialty: <em>{{ f_specialty }}</em>
+          <a class="rm" href="{{ url_for('index', q=q, skills=f_skills, education=f_education, exp_min=f_exp_min, exp_max=f_exp_max, has_file=f_has_file) }}" title="Remove">&times;</a>
+        </span>
+      {% endif %}
+
+      {% if f_skills %}
+        <span class="active-chip">
+          <i class="bi bi-tags" style="font-size:.8rem"></i> Skills: <em>{{ f_skills }}</em>
+          <a class="rm" href="{{ url_for('index', q=q, specialty=f_specialty, education=f_education, exp_min=f_exp_min, exp_max=f_exp_max, has_file=f_has_file) }}" title="Remove">&times;</a>
+        </span>
+      {% endif %}
+
+      {% if f_education %}
+        <span class="active-chip">
+          <i class="bi bi-mortarboard" style="font-size:.8rem"></i> Education: <em>{{ f_education }}</em>
+          <a class="rm" href="{{ url_for('index', q=q, specialty=f_specialty, skills=f_skills, exp_min=f_exp_min, exp_max=f_exp_max, has_file=f_has_file) }}" title="Remove">&times;</a>
+        </span>
+      {% endif %}
+
+      {% if f_exp_min or f_exp_max %}
+        <span class="active-chip">
+          <i class="bi bi-clock-history" style="font-size:.8rem"></i>
+          Experience:
+          {% if f_exp_min and f_exp_max %}<em>{{ f_exp_min }}–{{ f_exp_max }} yrs</em>
+          {% elif f_exp_min %}<em>≥ {{ f_exp_min }} yrs</em>
+          {% else %}<em>≤ {{ f_exp_max }} yrs</em>{% endif %}
+          <a class="rm" href="{{ url_for('index', q=q, specialty=f_specialty, skills=f_skills, education=f_education, has_file=f_has_file) }}" title="Remove">&times;</a>
+        </span>
+      {% endif %}
+
+      {% if f_has_file %}
+        <span class="active-chip">
+          <i class="bi bi-file-earmark" style="font-size:.8rem"></i>
+          File: <em>{{ 'Has resume file' if f_has_file == 'yes' else 'No file attached' }}</em>
+          <a class="rm" href="{{ url_for('index', q=q, specialty=f_specialty, skills=f_skills, education=f_education, exp_min=f_exp_min, exp_max=f_exp_max, linkedin=f_linkedin, github=f_github, status=f_status) }}" title="Remove">&times;</a>
+        </span>
+      {% endif %}
+
+      {% if f_status %}
+        <span class="active-chip">
+          <i class="bi bi-briefcase" style="font-size:.8rem"></i>
+          Status: <em>{{ f_status }}</em>
+          <a class="rm" href="{{ url_for('index', q=q, specialty=f_specialty, skills=f_skills, education=f_education, exp_min=f_exp_min, exp_max=f_exp_max, has_file=f_has_file, linkedin=f_linkedin, github=f_github) }}" title="Remove">&times;</a>
+        </span>
+      {% endif %}
+
+      {% if f_linkedin %}
+        <span class="active-chip">
+          <i class="bi bi-linkedin" style="font-size:.8rem"></i>
+          LinkedIn: <em>{{ 'Has' if f_linkedin == 'yes' else 'None' }}</em>
+          <a class="rm" href="{{ url_for('index', q=q, specialty=f_specialty, skills=f_skills, education=f_education, exp_min=f_exp_min, exp_max=f_exp_max, has_file=f_has_file, github=f_github, status=f_status) }}" title="Remove">&times;</a>
+        </span>
+      {% endif %}
+
+      {% if f_github %}
+        <span class="active-chip">
+          <i class="bi bi-github" style="font-size:.8rem"></i>
+          GitHub: <em>{{ 'Has' if f_github == 'yes' else 'None' }}</em>
+          <a class="rm" href="{{ url_for('index', q=q, specialty=f_specialty, skills=f_skills, education=f_education, exp_min=f_exp_min, exp_max=f_exp_max, has_file=f_has_file, linkedin=f_linkedin, status=f_status) }}" title="Remove">&times;</a>
+        </span>
+      {% endif %}
+
+      <span class="ms-auto text-muted small">
+        <strong>{{ applicants|length }}</strong> of {{ total }} applicant(s) match
+      </span>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- ── Applicants Table ───────────────────────────────────────────────── -->
+  <div class="card border-0 shadow-sm">
+    <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
+      <h5 class="mb-0 fw-semibold text-dark">
+        <i class="bi bi-table me-2 text-primary"></i>
+        Applicants
+        {% if any_filter %}
+          <span class="badge bg-primary rounded-pill ms-1" style="font-size:.75rem">{{ applicants|length }} results</span>
+        {% endif %}
+      </h5>
+      <div class="d-flex align-items-center gap-3">
+        <small class="text-muted d-none d-md-inline">Click a name to view the full resume</small>
+      </div>
+    </div>
+    <div class="card-body p-0">
+      {% if applicants %}
+        <div class="table-responsive">
+          <table class="table table-hover align-middle mb-0">
+            <thead class="table-light">
+              <tr>
+                <th class="ps-4 text-muted fw-semibold" style="width:40px">#</th>
+                <th class="text-muted fw-semibold">Applicant Name</th>
+                <th class="text-muted fw-semibold text-center">Status</th>
+                <th class="text-muted fw-semibold">Specialty / Field</th>
+                <th class="text-muted fw-semibold text-center">Experience</th>
+                <th class="text-muted fw-semibold">Highest Education</th>
+                <th class="text-muted fw-semibold">Key Skills</th>
+                <th class="text-muted fw-semibold text-center">File</th>
+                <th class="text-muted fw-semibold">Date Added</th>
+                <th class="text-muted fw-semibold text-center pe-4">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for a in applicants %}
+              <tr class="applicant-row">
+                <td class="ps-4 text-muted">{{ loop.index }}</td>
+
+                <td>
+                  <a href="{{ url_for('view_resume', applicant_id=a.id) }}"
+                     class="applicant-name-link fw-semibold text-decoration-none">
+                    <i class="bi bi-person-circle me-1 text-primary"></i>{{ a.name }}
+                  </a>
+                  {% if a.email %}
+                    <div class="small text-muted mt-1">
+                      <i class="bi bi-envelope me-1"></i>{{ a.email }}
+                    </div>
+                  {% endif %}
+                  {% if a.linkedin_url or a.github_url %}
+                    <div class="d-flex gap-2 mt-1">
+                      {% if a.linkedin_url %}
+                        <a href="{{ a.linkedin_url }}" target="_blank" rel="noopener"
+                           class="text-primary" title="LinkedIn Profile" onclick="event.stopPropagation()">
+                          <i class="bi bi-linkedin"></i>
+                        </a>
+                      {% endif %}
+                      {% if a.github_url %}
+                        <a href="{{ a.github_url }}" target="_blank" rel="noopener"
+                           class="text-dark" title="GitHub Profile" onclick="event.stopPropagation()">
+                          <i class="bi bi-github"></i>
+                        </a>
+                      {% endif %}
+                    </div>
+                  {% endif %}
+                </td>
+
+                {# ── Hiring status badge — auto-set from hiring_status field ── #}
+                <td class="text-center" style="white-space:nowrap">
+                  {% set hs = a.hiring_status or 'Under Review' %}
+                  {% if hs == 'Hired' %}
+                    <span class="badge status-hired rounded-pill px-3 py-1">
+                      <i class="bi bi-check-circle-fill me-1"></i>Hired
+                    </span>
+                  {% elif hs == 'Rejected' %}
+                    <span class="badge status-rejected rounded-pill px-3 py-1">
+                      <i class="bi bi-x-circle-fill me-1"></i>Rejected
+                    </span>
+                  {% elif hs == 'Interview Scheduled' %}
+                    <span class="badge status-interview rounded-pill px-3 py-1">
+                      <i class="bi bi-calendar-event-fill me-1"></i>Interview
+                    </span>
+                  {% elif hs == 'On Hold' %}
+                    <span class="badge status-onhold rounded-pill px-3 py-1">
+                      <i class="bi bi-pause-circle-fill me-1"></i>On Hold
+                    </span>
+                  {% else %}
+                    <span class="badge status-open rounded-pill px-3 py-1">
+                      <i class="bi bi-circle me-1"></i>Open
+                    </span>
+                  {% endif %}
+                </td>
+
+                <td>
+                  <span class="badge specialty-badge text-bg-primary-subtle rounded-pill px-3 py-2">
+                    {{ a.specialty }}
+                  </span>
+                </td>
+
+                <td class="text-center">
+                  {% if a.years_experience == 0 %}
+                    <span class="text-muted small">Entry Level</span>
+                  {% elif a.years_experience == 1 %}
+                    <span class="fw-semibold">1 <small class="text-muted fw-normal">yr</small></span>
+                  {% else %}
+                    <span class="fw-semibold">{{ a.years_experience }} <small class="text-muted fw-normal">yrs</small></span>
+                  {% endif %}
+                </td>
+
+                <td>
+                  {% if a.highest_education %}
+                    <i class="bi bi-mortarboard text-secondary me-1"></i>{{ a.highest_education }}
+                  {% else %}
+                    <span class="text-muted small">—</span>
+                  {% endif %}
+                </td>
+
+                <td>
+                  {% if a.skills %}
+                    <div class="skills-cell">
+                      {% for skill in a.skills.split(',')[:4] %}
+                        <span class="badge bg-light text-dark border me-1 mb-1">{{ skill.strip() }}</span>
+                      {% endfor %}
+                      {% if a.skills.split(',')|length > 4 %}
+                        <span class="badge bg-secondary text-white">+{{ a.skills.split(',')|length - 4 }} more</span>
+                      {% endif %}
+                    </div>
+                  {% else %}
+                    <span class="text-muted small">—</span>
+                  {% endif %}
+                </td>
+
+                <td class="text-center">
+                  {% if a.resume_filename %}
+                    <span class="badge bg-success-subtle text-success border border-success-subtle">
+                      <i class="bi bi-file-earmark-check-fill me-1"></i>
+                      {{ a.resume_filename.rsplit('.', 1)[-1].upper() }}
+                    </span>
+                  {% else %}
+                    <span class="badge bg-warning-subtle text-warning border border-warning-subtle">
+                      <i class="bi bi-file-earmark-x me-1"></i>No File
+                    </span>
+                  {% endif %}
+                </td>
+
+                <td class="text-muted small">{{ a.date_added[:10] if a.date_added else '' }}</td>
+
+                <td class="text-center pe-4">
+                  <div class="d-flex justify-content-center gap-1">
+                    <a href="{{ url_for('view_resume', applicant_id=a.id) }}"
+                       class="btn btn-sm btn-outline-primary" title="View Resume">
+                      <i class="bi bi-eye-fill"></i>
+                    </a>
+                    {% if can_edit %}
+                    <a href="{{ url_for('edit_resume', applicant_id=a.id) }}"
+                       class="btn btn-sm btn-outline-secondary" title="Edit">
+                      <i class="bi bi-pencil-fill"></i>
+                    </a>
+                    {% endif %}
+                    {% if can_delete %}
+                    <button type="button" class="btn btn-sm btn-outline-danger" title="Delete"
+                            onclick="confirmDelete({{ a.id }}, '{{ a.name | e }}')">
+                      <i class="bi bi-trash3-fill"></i>
+                    </button>
+                    {% endif %}
+                  </div>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+      {% else %}
+        <div class="text-center py-5">
+          {% if any_filter %}
+            <i class="bi bi-funnel display-3 text-muted opacity-50"></i>
+            <h4 class="mt-3 text-muted">No applicants match your filters</h4>
+            <p class="text-muted mb-3">Try relaxing one or more of the filters above.</p>
+            <a href="{{ url_for('index') }}" class="btn btn-outline-primary">
+              <i class="bi bi-x-circle me-2"></i>Clear All Filters
+            </a>
+          {% else %}
+            <i class="bi bi-folder2-open display-3 text-muted opacity-50"></i>
+            <h4 class="mt-3 text-muted">No resumes yet</h4>
+            <p class="text-muted">Get started by adding the first resume.</p>
+            <a href="{{ url_for('add_resume') }}" class="btn btn-primary btn-lg mt-2">
+              <i class="bi bi-plus-circle-fill me-2"></i>Add First Resume
+            </a>
+          {% endif %}
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="text-center text-muted small mt-4 pb-3">
+    TransCrypts Resume Database &mdash; All data stored locally on this computer
+  </div>
+</div>
+
+<!-- ── Shutdown Modal ─────────────────────────────────────────────────────── -->
+<div class="modal fade" id="shutdownModal" tabindex="-1" data-bs-backdrop="static">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title fw-bold"><i class="bi bi-power text-danger me-2"></i>Close Program</h5>
+      </div>
+      <div class="modal-body py-3">
+        <div class="alert alert-success d-flex align-items-center mb-3">
+          <i class="bi bi-shield-fill-check fs-5 me-2"></i>
+          <div><strong>All data is saved.</strong> Every record is stored safely in the database.</div>
+        </div>
+        <p class="mb-0 text-muted">Are you sure you want to close the Resume Database?</p>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-secondary px-4" data-bs-dismiss="modal">
+          <i class="bi bi-arrow-left me-1"></i>Go Back
+        </button>
+        <button type="button" class="btn btn-danger px-4" id="confirmShutdownBtn" onclick="doShutdown()">
+          <i class="bi bi-power me-1"></i>Yes, Close Program
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Delete Modal ───────────────────────────────────────────────────────── -->
+<div class="modal fade" id="deleteModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title text-danger"><i class="bi bi-exclamation-triangle-fill me-2"></i>Confirm Delete</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form id="deleteForm" method="POST">
+      <div class="modal-body pt-2">
+        <p class="mb-1">Permanently delete the resume for:</p>
+        <p class="fw-bold fs-5 mb-3" id="deleteApplicantName"></p>
+        <div class="mb-2">
+          <label class="form-label fw-semibold">Reason for deletion <span class="text-danger">*</span></label>
+          <textarea name="delete_reason" id="deleteReason" class="form-control" rows="2"
+                    placeholder="e.g. Duplicate record, candidate withdrew, position filled…"
+                    required></textarea>
+          <div class="form-text text-muted">
+            <i class="bi bi-info-circle me-1"></i>This reason is saved permanently in the Audit Log.
+          </div>
+        </div>
+        <p class="text-muted small mb-0"><i class="bi bi-exclamation-triangle-fill text-danger me-1"></i>This cannot be undone. The resume file will also be deleted.</p>
+      </div>
+      <div class="modal-footer border-0">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-danger"><i class="bi bi-trash3-fill me-1"></i>Yes, Delete</button>
+      </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+function showShutdownModal()     { new bootstrap.Modal(document.getElementById('shutdownModal')).show(); }
+
+function doShutdown() {
+  const btn = document.getElementById('confirmShutdownBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Closing…';
+  fetch('/shutdown', { method: 'POST' }).finally(() => {
+    document.body.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100vh;background:#f1f5f9;font-family:Segoe UI,sans-serif"><div style="background:white;border-radius:16px;padding:48px 56px;box-shadow:0 8px 32px rgba(0,0,0,.1);text-align:center"><div style="font-size:3.5rem;color:#16a34a;margin-bottom:16px">✅</div><h3 style="font-weight:700;color:#1e293b;margin-bottom:8px">Program Closed</h3><p style="color:#64748b;margin:0">All data has been saved.<br>You can now close this browser tab.</p></div></div>`;
+  });
+}
+
+function confirmDelete(id, name) {
+  document.getElementById('deleteApplicantName').textContent = name;
+  document.getElementById('deleteForm').action = '/delete/' + id;
+  document.getElementById('deleteReason').value = '';
+  new bootstrap.Modal(document.getElementById('deleteModal')).show();
+}
+
+// Press Enter in any filter field to submit the form
+document.querySelectorAll('#filterForm input, #filterForm select').forEach(el => {
+  el.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('filterForm').submit(); });
+});
+</script>
+</body>
+</html>

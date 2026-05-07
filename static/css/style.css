@@ -1,0 +1,344 @@
+/* ── Brand Colors (TransCrypts Pistachio Green) ───────────────────────────── */
+:root {
+  --tc-green:        #6DC49A;   /* primary pistachio green  */
+  --tc-green-dark:   #52a97e;   /* hover / darker shade     */
+  --tc-green-darker: #3d8a64;   /* active / focus           */
+  --tc-green-light:  #e8f5ee;   /* subtle background        */
+  --tc-green-border: #c2e0cf;   /* light border             */
+
+  /* Override Bootstrap primary to pistachio green */
+  --bs-primary:            #6DC49A;
+  --bs-primary-rgb:        109, 196, 154;
+  --bs-link-color:         #52a97e;
+  --bs-link-hover-color:   #3d8a64;
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────────── */
+body {
+  background-color: #f2f8f5;   /* very soft green-tinted page background */
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  color: #1e293b;
+}
+
+/* ── Company Header ───────────────────────────────────────────────────────── */
+.company-header {
+  background-color: #ffffff;
+  border-bottom: 2px solid var(--tc-green-border) !important;
+}
+/* ── TransCrypts Logo (HTML/CSS) ──────────────────────────────────────────── */
+.tc-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+  user-select: none;
+}
+.tc-logo-icon-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: flex-end;
+}
+.tc-logo-icon-wrap .tc-doc {
+  font-size: 1.9rem;
+  color: #9ca3af;
+  line-height: 1;
+}
+.tc-logo-icon-wrap .tc-check {
+  position: absolute;
+  bottom: -2px;
+  right: -6px;
+  background: #6DC49A;
+  border-radius: 5px;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.65rem;
+  color: #fff;
+  font-weight: 900;
+}
+.tc-logo-text {
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1;
+}
+.tc-trans  { color: #1a1a1a; }
+.tc-crypts { color: #6DC49A; }
+
+/* Navbar variant — white "Trans" on green background */
+.navbar .tc-trans  { color: #ffffff; }
+.navbar .tc-crypts { color: #d4f5e5; }
+.navbar .tc-doc    { color: rgba(255,255,255,0.7); }
+.navbar .tc-check  { background: rgba(255,255,255,0.9); color: #6DC49A; }
+
+/* Company header variant — larger */
+.company-header .tc-logo-text { font-size: 1.6rem; }
+.company-header .tc-doc       { font-size: 2.2rem; }
+.company-header .tc-check     { width: 20px; height: 20px; font-size: 0.8rem; border-radius: 6px; }
+
+/* ── Navbar ───────────────────────────────────────────────────────────────── */
+.navbar {
+  background: linear-gradient(135deg, #4aaa7a 0%, #6DC49A 100%) !important;
+}
+
+/* ── Home Button — solid white so it stands out against the green navbar ─── */
+.btn-home {
+  background-color: #ffffff;
+  border: 1.5px solid rgba(255,255,255,0.7);
+  color: #1a5c3e;
+  font-weight: 700;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.20);
+  letter-spacing: 0.01em;
+}
+.btn-home:hover, .btn-home:focus, .btn-home:active {
+  background-color: #edfaf3;
+  border-color: #ffffff;
+  color: #124530;
+  box-shadow: 0 3px 12px rgba(0,0,0,0.26);
+}
+.btn-home .bi-house-fill {
+  color: #3d8a64;
+}
+
+/* ── Stat Cards ───────────────────────────────────────────────────────────── */
+.stat-card {
+  border-radius: 12px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(109,196,154,0.18) !important;
+}
+.stat-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.stat-number {
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--tc-green-dark);
+}
+.stat-label {
+  font-size: 0.8rem;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+/* ── Main Table ───────────────────────────────────────────────────────────── */
+.table > thead > tr > th {
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding-top: 14px;
+  padding-bottom: 14px;
+  border-bottom: 2px solid var(--tc-green-border);
+}
+.table > tbody > tr > td {
+  padding-top: 14px;
+  padding-bottom: 14px;
+  vertical-align: middle;
+  border-bottom: 1px solid #f0f9f4;
+}
+.applicant-row {
+  transition: background-color 0.1s ease;
+}
+.applicant-row:hover {
+  background-color: #f2fbf6 !important;
+}
+.applicant-row:last-child td {
+  border-bottom: none;
+}
+
+/* ── Clickable Name Link ──────────────────────────────────────────────────── */
+.applicant-name-link {
+  color: var(--tc-green-dark);
+  font-size: 1rem;
+  transition: color 0.15s ease;
+}
+.applicant-name-link:hover {
+  color: var(--tc-green-darker);
+  text-decoration: underline !important;
+}
+
+/* ── Specialty Badge ──────────────────────────────────────────────────────── */
+.specialty-badge {
+  background-color: var(--tc-green-light) !important;
+  color: var(--tc-green-darker) !important;
+  font-weight: 500;
+  font-size: 0.82rem;
+}
+
+/* ── Skills Cell ──────────────────────────────────────────────────────────── */
+.skills-cell {
+  max-width: 240px;
+}
+
+/* ── Cards ────────────────────────────────────────────────────────────────── */
+.card {
+  border-radius: 12px;
+}
+.card-header {
+  border-radius: 12px 12px 0 0 !important;
+  border-bottom: 1px solid #f0f9f4;
+}
+
+/* ── Step Badge (form sections) ───────────────────────────────────────────── */
+.step-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+/* ── Profile Avatar ───────────────────────────────────────────────────────── */
+.profile-avatar {
+  width: 90px;
+  height: 90px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #4aaa7a, #6DC49A);
+  color: #fff;
+  font-size: 2.5rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 16px rgba(109,196,154,0.4);
+}
+
+/* ── Contact Links ────────────────────────────────────────────────────────── */
+.contact-link {
+  color: #374151;
+  text-decoration: none;
+  font-size: 0.92rem;
+  transition: color 0.15s;
+}
+.contact-link:hover {
+  color: var(--tc-green-dark);
+}
+
+/* ── Detail List (view page) ──────────────────────────────────────────────── */
+.detail-list dt {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #94a3b8;
+  font-weight: 600;
+  margin-top: 16px;
+  margin-bottom: 4px;
+}
+.detail-list dt:first-child {
+  margin-top: 0;
+}
+.detail-list dd {
+  font-size: 0.97rem;
+  color: #1e293b;
+  font-weight: 500;
+  margin-bottom: 0;
+}
+
+/* ── Upload Area ──────────────────────────────────────────────────────────── */
+.upload-area {
+  border: 2px dashed var(--tc-green-border);
+  border-radius: 10px;
+  padding: 16px;
+  transition: border-color 0.2s;
+}
+.upload-area:focus-within {
+  border-color: var(--tc-green);
+  background: var(--tc-green-light);
+}
+.upload-hint {
+  text-align: center;
+  padding: 8px 0 4px;
+  pointer-events: none;
+}
+
+/* ── Search Bar ───────────────────────────────────────────────────────────── */
+.input-group .form-control:focus {
+  box-shadow: none;
+  border-color: var(--tc-green);
+}
+.input-group .input-group-text {
+  border-color: #dee2e6;
+}
+.input-group .form-control {
+  border-color: #dee2e6;
+}
+
+/* ── Bootstrap primary overrides ─────────────────────────────────────────── */
+.btn-primary {
+  background: linear-gradient(135deg, #4aaa7a, #6DC49A);
+  border-color: #4aaa7a;
+  color: #fff;
+}
+.btn-primary:hover, .btn-primary:focus, .btn-primary:active {
+  background: linear-gradient(135deg, #3d8a64, #52a97e) !important;
+  border-color: #3d8a64 !important;
+  color: #fff !important;
+}
+.btn-outline-primary {
+  color: var(--tc-green-dark);
+  border-color: var(--tc-green);
+}
+.btn-outline-primary:hover {
+  background-color: var(--tc-green);
+  border-color: var(--tc-green);
+  color: #fff;
+}
+.text-primary {
+  color: var(--tc-green-dark) !important;
+}
+.bg-primary {
+  background-color: var(--tc-green) !important;
+}
+.border-primary {
+  border-color: var(--tc-green) !important;
+}
+.bg-primary-subtle {
+  background-color: var(--tc-green-light) !important;
+}
+.text-bg-primary-subtle {
+  background-color: var(--tc-green-light) !important;
+  color: var(--tc-green-darker) !important;
+}
+.badge.bg-primary {
+  background-color: var(--tc-green) !important;
+  color: #fff !important;
+}
+.form-control:focus, .form-select:focus {
+  border-color: var(--tc-green);
+  box-shadow: 0 0 0 0.2rem rgba(109,196,154,0.25);
+}
+.table-light {
+  background-color: #f2fbf6 !important;
+}
+
+/* ── Auto-Fill highlight (fields filled by AI) ────────────────────────────── */
+.auto-filled {
+  border-color: #6DC49A !important;
+  background-color: #f0fdf6 !important;
+  box-shadow: 0 0 0 0.2rem rgba(109,196,154,0.25) !important;
+  transition: background-color 0.4s ease, border-color 0.4s ease;
+}
+
+/* ── Alert tweaks ─────────────────────────────────────────────────────────── */
+.alert {
+  border-radius: 10px;
+}
+
+/* ── Responsive tweaks ────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .skills-cell { max-width: 160px; }
+}

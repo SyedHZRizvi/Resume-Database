@@ -1,0 +1,86 @@
+# ════════════════════════════════════════════════════════════════════════════
+#  TransCrypts Resume Database — Files NEVER pushed to GitHub
+# ════════════════════════════════════════════════════════════════════════════
+
+# ─── SECRETS & CREDENTIALS ──────────────────────────────────────────────────
+# config.py contains real passwords and API keys.
+# A safe template (config.example.py) IS committed instead.
+config.py
+.secret_key
+
+# Google OAuth files (kept for future re-enable, but never committed)
+google_credentials.json
+google_token.json
+
+# Generic .env files
+.env
+.env.*
+!.env.example
+
+# ─── USER DATA  (PII — must stay local) ──────────────────────────────────────
+# SQLite databases — contain real applicant info, hashed passwords, audit logs
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Uploaded resumes (PDFs, DOCXs) — applicant personal data
+uploads/
+
+# Application logs (may contain emails, names, paths)
+*.log
+startup.log
+
+# ─── PYTHON ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+.venv/
+.env/
+ENV/
+
+# ─── IDEs / EDITORS ──────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── PYTHON TOOLING ──────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# ─── LOCAL DEV ARTIFACTS ─────────────────────────────────────────────────────
+*.tmp
+*.bak
+*.orig
+node_modules/

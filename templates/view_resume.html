@@ -1,0 +1,1011 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ applicant.name }} — Resume Database</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
+  <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet" />
+</head>
+<body>
+
+<!-- ── Navbar ─────────────────────────────────────────────────────────────── -->
+<nav class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm">
+  <div class="container-fluid px-4">
+    <a class="navbar-brand tc-logo" href="{{ url_for('index') }}">
+      <span class="tc-logo-icon-wrap">
+        <i class="bi bi-file-earmark-text tc-doc"></i>
+        <span class="tc-check"><i class="bi bi-check-lg"></i></span>
+      </span>
+      <span class="tc-logo-text">
+        <span class="tc-trans">Trans</span><span class="tc-crypts">Crypts</span>
+      </span>
+    </a>
+    <div class="ms-auto d-flex align-items-center gap-2">
+      <a href="{{ url_for('index') }}" class="btn btn-home" title="Home">
+        <i class="bi bi-house-fill me-1"></i> Home
+      </a>
+      {% if can_edit %}
+      <a href="{{ url_for('edit_resume', applicant_id=applicant.id) }}" class="btn btn-warning fw-semibold">
+        <i class="bi bi-pencil-fill me-1"></i> Edit
+      </a>
+      {% endif %}
+      {% if can_delete %}
+      <button type="button" class="btn btn-outline-danger fw-semibold"
+              onclick="confirmDelete({{ applicant.id }}, '{{ applicant.name | e }}')">
+        <i class="bi bi-trash3-fill me-1"></i> Delete
+      </button>
+      {% endif %}
+      <a href="{{ url_for('index') }}" class="btn btn-outline-light">
+        <i class="bi bi-arrow-left me-1"></i> Back
+      </a>
+      <!-- User menu (only when login is enabled) -->
+      {% if require_login %}
+      <div class="dropdown">
+        <button class="btn btn-outline-light dropdown-toggle d-flex align-items-center gap-2"
+                type="button" data-bs-toggle="dropdown">
+          <i class="bi bi-person-circle"></i>
+          <span class="d-none d-lg-inline">{{ session.full_name }}</span>
+          <span class="badge bg-warning text-dark" style="font-size:.65rem">{{ ROLE_LABEL }}</span>
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end shadow">
+          <li><h6 class="dropdown-header">{{ session.username }}</h6></li>
+          <li><a class="dropdown-item" href="{{ url_for('change_password') }}">
+            <i class="bi bi-shield-lock me-2 text-muted"></i>Change Password</a></li>
+          {% if can_users %}
+            <li><a class="dropdown-item" href="{{ url_for('manage_users') }}">
+              <i class="bi bi-people-fill me-2 text-muted"></i>Manage Users</a></li>
+          {% endif %}
+          {% if can_audit %}
+            <li><a class="dropdown-item" href="{{ url_for('audit_log') }}">
+              <i class="bi bi-journal-text me-2 text-muted"></i>Audit Log</a></li>
+          {% endif %}
+          <li><hr class="dropdown-divider"></li>
+          <li>
+            <form method="POST" action="{{ url_for('logout') }}" class="d-inline">
+              <button type="submit" class="dropdown-item text-danger">
+                <i class="bi bi-box-arrow-right me-2"></i>Sign Out
+              </button>
+            </form>
+          </li>
+        </ul>
+      </div>
+      {% endif %}
+      {% if can_shutdown %}
+      <button type="button" class="btn btn-danger fw-semibold px-3" onclick="showShutdownModal()">
+        <i class="bi bi-power me-1"></i> Close Program
+      </button>
+      {% endif %}
+    </div>
+  </div>
+</nav>
+
+<div class="container-fluid px-4 py-4">
+
+  <!-- ── Flash Messages ───────────────────────────────────────────────────── -->
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for category, message in messages %}
+        <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }} alert-dismissible fade show shadow-sm">
+          <i class="bi bi-{{ 'check-circle-fill' if category == 'success' else 'exclamation-triangle-fill' }} me-2"></i>
+          {{ message }}
+          <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  <div class="row g-4">
+
+    <!-- ── Left Panel: Applicant Profile ──────────────────────────────────── -->
+    <div class="col-12 col-xl-4">
+
+      <!-- Profile Card -->
+      <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body text-center py-5">
+          <div class="profile-avatar mx-auto mb-3">
+            {{ applicant.name[0].upper() }}
+          </div>
+          <h3 class="fw-bold mb-1">{{ applicant.name }}</h3>
+          <p class="text-primary fw-semibold mb-3">{{ applicant.specialty }}</p>
+
+          {% if applicant.email or applicant.phone or applicant.linkedin_url or applicant.github_url %}
+            <div class="d-flex flex-column gap-2 text-start border-top pt-3 mt-2">
+              {% if applicant.email %}
+                <a href="mailto:{{ applicant.email }}" class="contact-link">
+                  <i class="bi bi-envelope-fill text-primary me-2"></i>{{ applicant.email }}
+                </a>
+              {% endif %}
+              {% if applicant.phone %}
+                <a href="tel:{{ applicant.phone }}" class="contact-link">
+                  <i class="bi bi-telephone-fill text-primary me-2"></i>{{ applicant.phone }}
+                </a>
+              {% endif %}
+              {% if applicant.linkedin_url %}
+                <a href="{{ applicant.linkedin_url }}" target="_blank" rel="noopener" class="contact-link">
+                  <i class="bi bi-linkedin text-primary me-2"></i>LinkedIn Profile
+                </a>
+              {% endif %}
+              {% if applicant.github_url %}
+                <a href="{{ applicant.github_url }}" target="_blank" rel="noopener" class="contact-link">
+                  <i class="bi bi-github text-dark me-2"></i>GitHub Profile
+                </a>
+              {% endif %}
+            </div>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Details Card -->
+      <div class="card border-0 shadow-sm mb-4">
+        <div class="card-header bg-white py-3">
+          <h6 class="mb-0 fw-semibold text-dark">
+            <i class="bi bi-info-circle-fill text-primary me-2"></i>Professional Details
+          </h6>
+        </div>
+        <div class="card-body">
+          <dl class="detail-list mb-0">
+
+            <dt><i class="bi bi-briefcase-fill me-2 text-muted"></i>Specialty</dt>
+            <dd>
+              <span class="badge bg-primary rounded-pill px-3 py-2">{{ applicant.specialty }}</span>
+            </dd>
+
+            <dt><i class="bi bi-clock-history me-2 text-muted"></i>Experience</dt>
+            <dd>
+              {% if applicant.years_experience == 0 %}
+                <span class="text-muted">Entry Level / Fresh Graduate</span>
+              {% elif applicant.years_experience == 1 %}
+                1 Year
+              {% else %}
+                {{ applicant.years_experience }} Years
+              {% endif %}
+            </dd>
+
+            <dt><i class="bi bi-mortarboard-fill me-2 text-muted"></i>Highest Education</dt>
+            <dd>{{ applicant.highest_education or '—' }}</dd>
+
+            <dt><i class="bi bi-calendar3 me-2 text-muted"></i>Date Added</dt>
+            <dd class="text-muted">{{ applicant.date_added[:10] if applicant.date_added else '—' }}</dd>
+
+          </dl>
+        </div>
+      </div>
+
+      <!-- Skills Card -->
+      {% if applicant.skills %}
+        <div class="card border-0 shadow-sm mb-4">
+          <div class="card-header bg-white py-3">
+            <h6 class="mb-0 fw-semibold text-dark">
+              <i class="bi bi-tags-fill text-primary me-2"></i>Key Skills
+            </h6>
+          </div>
+          <div class="card-body">
+            <div class="d-flex flex-wrap gap-2">
+              {% for skill in applicant.skills.split(',') %}
+                <span class="badge bg-light text-dark border px-3 py-2">{{ skill.strip() }}</span>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+      {% endif %}
+
+      <!-- Notes Card -->
+      {% if applicant.notes %}
+        <div class="card border-0 shadow-sm mb-4">
+          <div class="card-header bg-white py-3">
+            <h6 class="mb-0 fw-semibold text-dark">
+              <i class="bi bi-sticky-fill text-warning me-2"></i>Internal Notes
+            </h6>
+          </div>
+          <div class="card-body">
+            <p class="mb-0 text-muted" style="white-space: pre-wrap;">{{ applicant.notes }}</p>
+          </div>
+        </div>
+      {% endif %}
+
+      <!-- ── Hiring Decision Card ─────────────────────────────────────────── -->
+      {% set hs = applicant.hiring_status or 'Under Review' %}
+      <div class="card border-0 shadow-sm mb-4">
+        <div class="card-header bg-white py-3">
+          <h6 class="mb-0 fw-semibold text-dark">
+            <i class="bi bi-briefcase-fill text-primary me-2"></i>Hiring Decision
+          </h6>
+        </div>
+        <div class="card-body">
+
+          {# ── Current status badge ── #}
+          <div class="text-center mb-3">
+            {% if hs == 'Hired' %}
+              <span class="badge bg-success fs-6 px-4 py-2 d-block">
+                <i class="bi bi-check-circle-fill me-2"></i>Hired
+              </span>
+              {% if applicant.hire_date %}<div class="text-muted small mt-1"><i class="bi bi-calendar3 me-1"></i>{{ applicant.hire_date }}</div>{% endif %}
+            {% elif hs == 'Rejected' %}
+              <span class="badge bg-danger fs-6 px-4 py-2 d-block">
+                <i class="bi bi-x-circle-fill me-2"></i>Rejected
+              </span>
+              {% if applicant.decision_date %}<div class="text-muted small mt-1"><i class="bi bi-calendar3 me-1"></i>{{ applicant.decision_date }}</div>{% endif %}
+              {% if applicant.rejection_reason %}
+                <div class="text-muted small mt-2 text-start p-2 bg-light rounded">
+                  <strong>Reason:</strong> {{ applicant.rejection_reason }}
+                </div>
+              {% endif %}
+            {% elif hs == 'Interview Scheduled' %}
+              <span class="badge bg-info text-dark fs-6 px-4 py-2 d-block">
+                <i class="bi bi-calendar-event-fill me-2"></i>Interview Scheduled
+              </span>
+              {% if applicant.interview_date %}<div class="text-muted small mt-1"><i class="bi bi-calendar3 me-1"></i>{{ applicant.interview_date }}</div>{% endif %}
+              {% if applicant.interview_outcome and applicant.interview_outcome != 'Pending' %}
+                <div class="mt-1">
+                  {% if applicant.interview_outcome == 'Passed' %}
+                    <span class="badge bg-success-subtle text-success border border-success-subtle">Outcome: Passed</span>
+                  {% else %}
+                    <span class="badge bg-danger-subtle text-danger border border-danger-subtle">Outcome: Rejected</span>
+                  {% endif %}
+                </div>
+              {% endif %}
+            {% elif hs == 'On Hold' %}
+              <span class="badge bg-warning text-dark fs-6 px-4 py-2 d-block">
+                <i class="bi bi-pause-circle-fill me-2"></i>On Hold
+              </span>
+            {% else %}
+              <span class="badge bg-secondary fs-6 px-4 py-2 d-block">
+                <i class="bi bi-hourglass-split me-2"></i>Under Review
+              </span>
+            {% endif %}
+            {% if applicant.decision_notes %}
+              <div class="text-muted small mt-2 text-start p-2 bg-light rounded">
+                <i class="bi bi-chat-text-fill me-1"></i>{{ applicant.decision_notes }}
+              </div>
+            {% endif %}
+          </div>
+
+          {# ── Update form — shown only to authorised roles ── #}
+          {% if can_notes %}
+          <div class="border-top pt-3">
+            <button class="btn btn-sm btn-outline-primary w-100 mb-2" type="button"
+                    data-bs-toggle="collapse" data-bs-target="#statusForm">
+              <i class="bi bi-pencil-fill me-1"></i>Change Status
+            </button>
+            <div class="collapse" id="statusForm">
+              <form method="POST" action="{{ url_for('update_hiring_status', applicant_id=applicant.id) }}">
+                <div class="mb-2">
+                  <label class="form-label fw-semibold small">New Status</label>
+                  <select name="hiring_status" id="statusSelect" class="form-select form-select-sm"
+                          onchange="toggleStatusFields(this.value)">
+                    {% for s in ['Under Review','Interview Scheduled','Hired','Rejected','On Hold'] %}
+                      <option value="{{ s }}" {{ 'selected' if hs == s }}>{{ s }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+
+                {# Interview fields #}
+                <div id="f_interview" style="display:none">
+                  <div class="row g-2 mb-2">
+                    <div class="col-12 col-sm-4">
+                      <label class="form-label fw-semibold small">Interview Date</label>
+                      <input type="date" name="interview_date" id="statusIvDate"
+                             class="form-control form-control-sm"
+                             value="{{ applicant.interview_date or '' }}" />
+                    </div>
+                    <div class="col-12 col-sm-4">
+                      <label class="form-label fw-semibold small">Interview Time</label>
+                      <input type="time" name="interview_time" id="statusIvTime"
+                             class="form-control form-control-sm"
+                             value="{{ applicant.interview_time or '' }}" />
+                    </div>
+                    <div class="col-12 col-sm-4">
+                      <label class="form-label fw-semibold small">Format</label>
+                      <select name="interview_type" id="statusIvType"
+                              class="form-select form-select-sm">
+                        {% for t in ['In-Person','Video','Phone'] %}
+                          <option value="{{ t }}"
+                            {{ 'selected' if (applicant.interview_type or 'In-Person') == t }}>
+                            {{ t }}{% if t == 'Video' %} Call{% elif t == 'Phone' %} Call{% endif %}
+                          </option>
+                        {% endfor %}
+                      </select>
+                    </div>
+                  </div>
+                  <div class="mb-2">
+                    <label class="form-label fw-semibold small">Interview Outcome</label>
+                    <div class="d-flex gap-3">
+                      {% for opt in ['Pending','Passed','Rejected'] %}
+                      <div class="form-check">
+                        <input class="form-check-input" type="radio" name="interview_outcome"
+                               value="{{ opt }}" id="io_{{ opt }}"
+                               {{ 'checked' if (applicant.interview_outcome or 'Pending') == opt }}>
+                        <label class="form-check-label small" for="io_{{ opt }}">{{ opt }}</label>
+                      </div>
+                      {% endfor %}
+                    </div>
+                  </div>
+                </div>
+
+                {# Hired fields #}
+                <div id="f_hired" style="display:none">
+                  <div class="mb-2">
+                    <label class="form-label fw-semibold small">Hire Date</label>
+                    <input type="date" name="hire_date" class="form-control form-control-sm"
+                           value="{{ applicant.hire_date or '' }}" />
+                  </div>
+                </div>
+
+                {# Rejected fields #}
+                <div id="f_rejected" style="display:none">
+                  <div class="mb-2">
+                    <label class="form-label fw-semibold small">Date of Decision</label>
+                    <input type="date" name="decision_date" class="form-control form-control-sm"
+                           value="{{ applicant.decision_date or '' }}" />
+                  </div>
+                  <div class="mb-2">
+                    <label class="form-label fw-semibold small">
+                      Rejection Reason <span class="text-danger">*</span>
+                    </label>
+                    <textarea name="rejection_reason" class="form-control form-control-sm" rows="2"
+                              placeholder="e.g. Salary expectation mismatch, better candidate chosen…"
+                              >{{ applicant.rejection_reason or '' }}</textarea>
+                  </div>
+                </div>
+
+                {# Notes — always shown #}
+                <div class="mb-2">
+                  <label class="form-label fw-semibold small">
+                    Notes / Reason <span class="text-danger" id="notesRequired" style="display:none">*</span>
+                  </label>
+                  <textarea name="decision_notes" class="form-control form-control-sm" rows="2"
+                            placeholder="Add any relevant notes…" id="decisionNotesField"
+                            >{{ applicant.decision_notes or '' }}</textarea>
+                </div>
+
+                <button type="submit" class="btn btn-sm btn-success w-100">
+                  <i class="bi bi-save-fill me-1"></i>Save Decision
+                </button>
+              </form>
+            </div>
+          </div>
+          {% endif %}
+
+        </div>
+      </div>
+
+      <!-- ── Quick Actions ───────────────────────────────────────────────────
+           Edit and Delete are intentionally NOT here — they live in the top
+           navbar and would just be duplicates. Keeping only the actions that
+           are unique to this card (file download, add another resume).
+      -->
+      {% if (applicant.resume_filename and can_download) or can_add %}
+      <div class="card border-0 shadow-sm">
+        <div class="card-body">
+          <div class="d-grid gap-2">
+            {% if applicant.resume_filename and can_download %}
+              <a href="{{ url_for('uploaded_file', filename=applicant.resume_filename) }}"
+                 download class="btn btn-outline-success">
+                <i class="bi bi-download me-2"></i>Download Resume File
+              </a>
+            {% endif %}
+            {% if can_add %}
+            <a href="{{ url_for('add_resume') }}" class="btn btn-outline-secondary">
+              <i class="bi bi-plus-circle me-2"></i>Add Another Resume
+            </a>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
+    </div><!-- /left panel -->
+
+    <!-- ── Right Panel: Resume Viewer ─────────────────────────────────────── -->
+    <div class="col-12 col-xl-8">
+      <div class="card border-0 shadow-sm h-100">
+        <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+          <h5 class="mb-0 fw-semibold">
+            <i class="bi bi-file-earmark-text-fill text-primary me-2"></i>Resume Document
+          </h5>
+          {% if applicant.resume_filename %}
+            <div class="d-flex align-items-center gap-3">
+              <span class="badge bg-success-subtle text-success border border-success-subtle px-3 py-2">
+                <i class="bi bi-file-earmark-check-fill me-1"></i>
+                {{ applicant.resume_filename.rsplit('.', 1)[-1].upper() }} File
+              </span>
+              {% if can_download %}
+              <a href="{{ url_for('uploaded_file', filename=applicant.resume_filename) }}"
+                 download class="btn btn-sm btn-outline-success">
+                <i class="bi bi-download me-1"></i> Download
+              </a>
+              {% endif %}
+            </div>
+          {% endif %}
+        </div>
+        <div class="card-body p-0" style="min-height: 700px;">
+
+          {% if applicant.resume_filename %}
+
+            {% if file_ext == 'pdf' %}
+              <!-- PDF inline viewer -->
+              <iframe
+                src="{{ url_for('uploaded_file', filename=applicant.resume_filename) }}"
+                class="w-100 border-0 rounded-bottom"
+                style="height: 780px;"
+                title="Resume PDF for {{ applicant.name }}"
+              >
+                <p class="p-4">
+                  Your browser cannot display PDFs inline.
+                  <a href="{{ url_for('uploaded_file', filename=applicant.resume_filename) }}" download>
+                    Click here to download
+                  </a> the resume file.
+                </p>
+              </iframe>
+
+            {% elif file_ext in ['doc', 'docx'] %}
+              <!-- Word document — offer download -->
+              <div class="d-flex flex-column align-items-center justify-content-center h-100 py-5 text-center">
+                <i class="bi bi-file-earmark-word-fill display-1 text-primary mb-4" style="font-size:5rem"></i>
+                <h4 class="fw-bold">Word Document</h4>
+                <p class="text-muted mb-4" style="max-width:420px">
+                  Word (.doc / .docx) files cannot be displayed directly in the browser.<br>
+                  Use the button below to download and open it in Microsoft Word.
+                </p>
+                <a href="{{ url_for('uploaded_file', filename=applicant.resume_filename) }}"
+                   download class="btn btn-primary btn-lg px-5">
+                  <i class="bi bi-download me-2"></i>Download Word Document
+                </a>
+                <p class="text-muted small mt-3">{{ applicant.resume_filename }}</p>
+              </div>
+
+            {% else %}
+              <!-- Unknown file type -->
+              <div class="d-flex flex-column align-items-center justify-content-center h-100 py-5 text-center">
+                <i class="bi bi-file-earmark-fill display-1 text-secondary mb-4" style="font-size:5rem"></i>
+                <h4>File Attached</h4>
+                <a href="{{ url_for('uploaded_file', filename=applicant.resume_filename) }}"
+                   download class="btn btn-outline-primary btn-lg mt-2">
+                  <i class="bi bi-download me-2"></i>Download File
+                </a>
+              </div>
+            {% endif %}
+
+          {% else %}
+            <!-- No file uploaded -->
+            <div class="d-flex flex-column align-items-center justify-content-center h-100 py-5 text-center">
+              <i class="bi bi-file-earmark-x display-1 text-muted mb-4" style="font-size:5rem; opacity:0.3"></i>
+              <h4 class="text-muted">No Resume File Uploaded</h4>
+              <p class="text-muted mb-4" style="max-width:380px">
+                No resume document has been attached for this applicant yet.<br>
+                You can add one by editing this record.
+              </p>
+              <a href="{{ url_for('edit_resume', applicant_id=applicant.id) }}"
+                 class="btn btn-primary btn-lg px-4">
+                <i class="bi bi-upload me-2"></i>Upload Resume File
+              </a>
+            </div>
+          {% endif %}
+
+        </div>
+      </div>
+    </div><!-- /right panel -->
+
+  </div><!-- /row -->
+
+  <!-- ══════════════════════════════════════════════════════════════════════
+       INTERVIEW RECORDS — full-width section below the two panels
+  ═══════════════════════════════════════════════════════════════════════ -->
+  <div class="row mt-4">
+    <div class="col-12">
+      <div class="card border-0 shadow-sm">
+        <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+          <h5 class="mb-0 fw-semibold">
+            <i class="bi bi-people-fill text-primary me-2"></i>Interview Records
+            {% if interviews %}
+              <span class="badge bg-primary rounded-pill ms-1">{{ interviews|length }}</span>
+            {% endif %}
+          </h5>
+        </div>
+
+        {% if interviews %}
+        <div class="table-responsive">
+          <table class="table table-hover align-middle mb-0">
+            <thead class="table-light">
+              <tr>
+                <th class="ps-4 text-muted fw-semibold">Date &amp; Time</th>
+                <th class="text-muted fw-semibold">Format</th>
+                <th class="text-muted fw-semibold">Position</th>
+                <th class="text-muted fw-semibold">Interviewer</th>
+                <th class="text-muted fw-semibold text-center">Outcome</th>
+                <th class="text-muted fw-semibold">Notes</th>
+                {% if can_edit %}
+                <th class="text-muted fw-semibold text-center pe-4">Remove</th>
+                {% endif %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for iv in interviews %}
+              <tr>
+                <td class="ps-4 text-muted small" style="white-space:nowrap">
+                  {{ iv.interview_date or '—' }}
+                  {% if iv.interview_time %}
+                    <br><span class="text-secondary">{{ iv.interview_time }}</span>
+                  {% endif %}
+                </td>
+                <td class="small">
+                  {% if iv.interview_type == 'In-Person' %}
+                    <span class="badge bg-primary-subtle text-primary border border-primary-subtle">
+                      <i class="bi bi-building me-1"></i>In-Person
+                    </span>
+                  {% elif iv.interview_type == 'Video' %}
+                    <span class="badge bg-info-subtle text-info border border-info-subtle">
+                      <i class="bi bi-camera-video me-1"></i>Video
+                    </span>
+                  {% elif iv.interview_type == 'Phone' %}
+                    <span class="badge bg-warning-subtle text-warning border border-warning-subtle">
+                      <i class="bi bi-telephone me-1"></i>Phone
+                    </span>
+                  {% else %}
+                    {{ iv.interview_type or '—' }}
+                  {% endif %}
+                  {% if iv.meeting_link %}
+                    <br><a href="{{ iv.meeting_link }}" target="_blank"
+                           class="small text-primary">Join link →</a>
+                  {% endif %}
+                </td>
+                <td class="text-muted small">
+                  {{ iv.interview_position or applicant.specialty or '—' }}
+                </td>
+                <td class="fw-semibold">
+                  <i class="bi bi-person-badge text-primary me-1"></i>{{ iv.interviewer_name }}
+                  {% if iv.interviewer_designation %}
+                    <br><span class="text-muted fw-normal small">{{ iv.interviewer_designation }}</span>
+                  {% endif %}
+                  {% if iv.interviewer_email %}
+                    <br><span class="text-muted fw-normal small">{{ iv.interviewer_email }}</span>
+                  {% endif %}
+                </td>
+                <td class="text-center">
+                  {% if iv.outcome == 'Passed' %}
+                    <span class="badge bg-success-subtle text-success border border-success-subtle px-3">
+                      <i class="bi bi-check-circle-fill me-1"></i>Passed
+                    </span>
+                  {% elif iv.outcome == 'Rejected' %}
+                    <span class="badge bg-danger-subtle text-danger border border-danger-subtle px-3">
+                      <i class="bi bi-x-circle-fill me-1"></i>Rejected
+                    </span>
+                  {% else %}
+                    <span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle px-3">
+                      <i class="bi bi-hourglass-split me-1"></i>Pending
+                    </span>
+                  {% endif %}
+                </td>
+                <td class="text-muted small">{{ iv.interview_notes or '—' }}</td>
+                {% if can_edit %}
+                <td class="text-center pe-4">
+                  <form method="POST"
+                        action="{{ url_for('delete_interview', interview_id=iv.id) }}"
+                        onsubmit="return confirm('Remove this interview record?')">
+                    <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove">
+                      <i class="bi bi-trash3-fill"></i>
+                    </button>
+                  </form>
+                </td>
+                {% endif %}
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="text-center py-4 text-muted">
+          <i class="bi bi-calendar-x display-6 opacity-40"></i>
+          <p class="mt-2 mb-0 small">No interview records yet.</p>
+        </div>
+        {% endif %}
+
+        {# Add interview form — visible to roles that can write notes #}
+        {% if can_notes %}
+        <div class="border-top bg-white px-4 py-4">
+
+          <h5 class="fw-bold mb-4" style="color:#1a5c3e">
+            <i class="bi bi-plus-circle-fill me-2"></i>Schedule Interview
+          </h5>
+
+          <form method="POST" action="{{ url_for('add_interview', applicant_id=applicant.id) }}"
+                onsubmit="setTimeout(function(){ var b=document.getElementById('ivSubmitBtn'); b.disabled=true; b.innerHTML='<span class=\'spinner-border spinner-border-sm me-1\'></span>Saving…'; }, 0)">
+
+            {# ── Row 1: Date / Time / Format / Outcome ── #}
+            <div class="row g-3 mb-4">
+              <div class="col-12 col-sm-6 col-md-3">
+                <label class="form-label fw-bold">
+                  Interview Date <span class="text-danger">*</span>
+                </label>
+                <input type="date" name="interview_date" id="ivDate"
+                       class="form-control"
+                       value="{{ (latest_iv.interview_date if latest_iv and latest_iv.interview_date else applicant.interview_date) or '' }}" required />
+              </div>
+              <div class="col-12 col-sm-6 col-md-2">
+                <label class="form-label fw-bold">Time</label>
+                <input type="time" name="interview_time" id="ivTime"
+                       class="form-control"
+                       value="{{ (latest_iv.interview_time if latest_iv and latest_iv.interview_time else applicant.interview_time) or '' }}" />
+              </div>
+              <div class="col-12 col-sm-6 col-md-3">
+                <label class="form-label fw-bold">Format</label>
+                <select name="interview_type" id="ivType"
+                        class="form-select"
+                        onchange="toggleIvRows(this.value)">
+                  {% set cur_type = (latest_iv.interview_type if latest_iv and latest_iv.interview_type else applicant.interview_type) or 'In-Person' %}
+                  {% for t in ['In-Person','Video','Phone'] %}
+                    <option value="{{ t }}" {{ 'selected' if cur_type == t }}>
+                      {{ t }}{% if t != 'In-Person' %} Call{% endif %}
+                    </option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="col-12 col-sm-6 col-md-3">
+                <label class="form-label fw-bold">Outcome</label>
+                <select name="outcome" class="form-select">
+                  <option value="Pending">Pending</option>
+                  <option value="Passed">Passed</option>
+                  <option value="Rejected">Rejected</option>
+                </select>
+              </div>
+            </div>
+
+            {# ── Row 2: Position ── #}
+            <div class="mb-4">
+              <label class="form-label fw-bold">
+                Position / Role Being Interviewed For <span class="text-danger">*</span>
+              </label>
+              <input type="text" name="interview_position"
+                     class="form-control"
+                     value="{{ (latest_iv.interview_position if latest_iv and latest_iv.interview_position else applicant.specialty) or '' }}"
+                     placeholder="e.g. Senior Software Engineer, HR Manager…"
+                     required />
+            </div>
+
+            {# ── Row 3: Contact person (in-person) / Meeting link (virtual) ── #}
+            <div class="mb-4" id="ivInPersonRow">
+              <label class="form-label fw-bold">
+                Contact Person at Reception
+                <span class="text-muted fw-normal fs-6 ms-1">(candidate will be told to ask for this person)</span>
+              </label>
+              <input type="text" name="contact_person" class="form-control"
+                     value="{{ (latest_iv.contact_person if latest_iv and latest_iv.contact_person else office_contact_name) or office_contact_name }}"
+                     placeholder="e.g. Mesum Rizvi" />
+            </div>
+            <div class="mb-4 d-none" id="ivVirtualRow">
+              <label class="form-label fw-bold">
+                Meeting Link
+                <span class="badge bg-success ms-2" style="font-size:0.7rem">
+                  <i class="bi bi-check-circle-fill me-1"></i>Auto-create enabled
+                </span>
+              </label>
+              <div class="alert alert-success mb-2 py-2 px-3" style="font-size:0.92rem">
+                <i class="bi bi-magic me-1"></i>
+                <strong>Leave blank — a private Jitsi Meet room will be created
+                automatically</strong> when you click Schedule Interview. Both the
+                candidate and the interviewer will receive a one-click join button
+                in their email.
+                <br>
+                <span class="text-muted small">
+                  Jitsi is free, end-to-end encrypted, and requires no account or app
+                  install — works directly in any browser. Or paste your own
+                  Zoom / Teams / Meet URL below if you prefer.
+                </span>
+              </div>
+              <div class="alert alert-warning mb-2 py-2 px-3" style="font-size:0.88rem">
+                <i class="bi bi-info-circle-fill me-1"></i>
+                <strong>Note for the interviewer:</strong> on the public
+                <code>meet.jit.si</code> server, the host must click "Log-in"
+                (Google or Facebook account) when joining — this starts the
+                meeting and admits the candidate. The interviewer email
+                already explains this clearly.
+              </div>
+              <input type="url" name="meeting_link" id="ivMeetingLink"
+                     class="form-control"
+                     value="{{ (latest_iv.meeting_link if latest_iv and latest_iv.meeting_link else '') }}"
+                     placeholder="(leave blank — Jitsi link will be auto-created)" />
+            </div>
+
+            {# ── Row 4: Interviewers — checkbox list (multi-select) ── #}
+            <div class="mb-4">
+              <div class="d-flex align-items-center flex-wrap gap-2 mb-2">
+                <label class="form-label fw-bold mb-0">
+                  Interviewers <span class="text-danger">*</span>
+                </label>
+                <span id="ivSelCount"
+                      class="badge bg-secondary rounded-pill"
+                      style="font-size:.8rem">None selected</span>
+                <a href="{{ url_for('staff_list') }}" class="ms-auto fw-normal text-muted small"
+                   target="_blank">
+                  <i class="bi bi-pencil-square me-1"></i>Manage Staff Directory
+                </a>
+              </div>
+
+              {% if staff_list %}
+              <div class="border rounded-3 bg-white px-3 py-1"
+                   style="max-height:280px;overflow-y:auto">
+                {% for s in staff_list %}
+                <div class="d-flex align-items-center py-2{% if not loop.last %} border-bottom{% endif %}"
+                     style="border-color:#eef5f0 !important; gap:.75rem">
+                  {# Checkbox #}
+                  <input class="form-check-input iv-cb flex-shrink-0 mt-0" type="checkbox"
+                         name="iv_sel" id="ivs_{{ s.id }}"
+                         value="{{ s.id }}"
+                         data-name="{{ s.name|e }}"
+                         data-desig="{{ (s.designation or '')|e }}"
+                         data-email="{{ (s.email or '')|e }}"
+                         style="width:1.2em;height:1.2em;cursor:pointer"
+                         onchange="updateIvSelection()">
+                  {# Info #}
+                  <label class="flex-grow-1 mb-0" for="ivs_{{ s.id }}" style="cursor:pointer">
+                    <span class="fw-bold fs-6">{{ s.name }}</span>
+                    {% if s.designation %}
+                      <span class="text-muted ms-1">— {{ s.designation }}</span>
+                    {% endif %}
+                    {% if s.email %}
+                      <span class="d-block text-muted small">{{ s.email }}</span>
+                    {% endif %}
+                  </label>
+                  {# Selected pill — shown when checked #}
+                  <span class="badge bg-success iv-sel-badge d-none" id="badge_{{ s.id }}">
+                    <i class="bi bi-check-lg"></i> Selected
+                  </span>
+                </div>
+                {% endfor %}
+              </div>
+              {% else %}
+              <div class="text-muted p-3 border rounded bg-white">
+                No staff in directory yet.
+                <a href="{{ url_for('staff_list') }}">Add staff members</a> to see them here.
+              </div>
+              {% endif %}
+
+              {# ── Other / manual entry ── #}
+              <div class="mt-3 border rounded-3 bg-white px-3 py-3">
+                <div class="form-check mb-0" style="padding-left:1.8em">
+                  <input class="form-check-input" type="checkbox" id="ivOtherToggle"
+                         style="width:1.1em;height:1.1em;cursor:pointer"
+                         onchange="toggleOtherFields(this.checked)">
+                  <label class="form-check-label text-muted fst-italic ms-1" for="ivOtherToggle">
+                    Add someone not in the Staff Directory
+                  </label>
+                </div>
+                <div id="ivOtherFields" class="row g-3 mt-2 d-none">
+                  <div class="col-12 col-md-4">
+                    <input type="text" name="other_name" id="otherNameField"
+                           class="form-control" placeholder="Full name *">
+                  </div>
+                  <div class="col-12 col-md-4">
+                    <input type="text" name="other_desig" class="form-control"
+                           placeholder="Designation / Title (optional)">
+                  </div>
+                  <div class="col-12 col-md-4">
+                    <input type="email" name="other_email" class="form-control"
+                           placeholder="Email (for notification)"
+                           oninput="if(this.value) document.getElementById('chkInterviewer').checked=true;">
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {# ── Row 5: Notes ── #}
+            <div class="mb-4">
+              <label class="form-label fw-bold">
+                Interview Notes
+                <span class="text-muted fw-normal fs-6 ms-1">(optional)</span>
+              </label>
+              <textarea name="interview_notes" class="form-control" rows="3"
+                        placeholder="e.g. Focus on technical skills, ask about project X…">{{ (latest_iv.interview_notes if latest_iv and latest_iv.interview_notes else '') }}</textarea>
+            </div>
+
+            {# ── Email notifications ── #}
+            <div class="border rounded-3 p-4 mb-4"
+                 style="background:#f7fdf9;border-color:#c2e0cf !important">
+              <div class="fw-bold mb-3" style="font-size:1rem;color:#1a5c3e">
+                <i class="bi bi-envelope-fill me-2"></i>Send Notification Emails
+              </div>
+              <div class="row g-3">
+                <div class="col-12 col-md-6">
+                  {% if applicant.email %}
+                  <div class="form-check" style="padding-left:1.8em">
+                    <input class="form-check-input" type="checkbox" style="width:1.2em;height:1.2em"
+                           name="send_candidate_email" value="1" id="chkCandidate" checked>
+                    <label class="form-check-label fw-semibold ms-1" for="chkCandidate">
+                      Email Candidate
+                      <span class="text-success fw-normal"> — {{ applicant.email }}</span>
+                    </label>
+                    <div class="text-muted small mt-1" style="padding-left:0.3em">
+                      Sends interview date/time, location or link, and directions
+                    </div>
+                  </div>
+                  {% else %}
+                  <div class="alert alert-warning mb-0 py-2 px-3" style="font-size:0.9rem">
+                    <i class="bi bi-exclamation-triangle-fill me-1"></i>
+                    <strong>No candidate email on record</strong> —
+                    <a href="{{ url_for('edit_resume', applicant_id=applicant.id) }}"
+                       class="alert-link">add an email address</a> to send the candidate an invitation.
+                  </div>
+                  {% endif %}
+                </div>
+                <div class="col-12 col-md-6">
+                  <div class="form-check" style="padding-left:1.8em">
+                    <input class="form-check-input" type="checkbox" style="width:1.2em;height:1.2em"
+                           name="send_interviewer_email" value="1" id="chkInterviewer">
+                    <label class="form-check-label fw-semibold ms-1" for="chkInterviewer">
+                      Email Interviewer
+                      <span class="text-muted fw-normal"> (address selected above)</span>
+                    </label>
+                    <div class="text-muted small mt-1" style="padding-left:0.3em">
+                      Sends resume attachment + calendar invite (.ics)
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="d-flex justify-content-end">
+              <button type="submit" id="ivSubmitBtn"
+                      class="btn btn-success px-5 py-2 fw-bold fs-6">
+                <i class="bi bi-calendar-check-fill me-2"></i>Schedule Interview
+              </button>
+            </div>
+
+          </form>
+        </div>
+
+        <script>
+        // ── Show/hide contact-person vs meeting-link based on format ────────────
+        function toggleIvRows(t) {
+          document.getElementById('ivInPersonRow').classList.toggle('d-none', t !== 'In-Person');
+          document.getElementById('ivVirtualRow').classList.toggle('d-none', t === 'In-Person');
+        }
+        // Run on load so the correct row is visible immediately
+        (function() {
+          var sel = document.getElementById('ivType');
+          if (sel) toggleIvRows(sel.value);
+        })();
+
+        // ── Interviewer checkbox selection (multi-select) ────────────────────
+        function updateIvSelection() {
+          const boxes   = document.querySelectorAll('.iv-cb:checked');
+          const count   = boxes.length;
+          const countEl = document.getElementById('ivSelCount');
+
+          // Update counter badge
+          if (count === 0) {
+            countEl.textContent = 'None selected';
+            countEl.className   = 'badge bg-secondary rounded-pill';
+          } else {
+            const names = Array.from(boxes).map(b => b.dataset.name);
+            countEl.textContent = count === 1
+              ? '1 selected: ' + names[0]
+              : count + ' selected: ' + names.join(', ');
+            countEl.className = 'badge bg-success rounded-pill';
+          }
+
+          // Show / hide "Selected" badge next to each row
+          document.querySelectorAll('.iv-cb').forEach(cb => {
+            const badge = document.getElementById('badge_' + cb.value);
+            if (badge) badge.classList.toggle('d-none', !cb.checked);
+          });
+
+          // Auto-check "Email Interviewers" if at least one selected has an email
+          const anyEmail = Array.from(boxes).some(b => b.dataset.email);
+          if (anyEmail) document.getElementById('chkInterviewer').checked = true;
+        }
+
+        // ── Other / manual entry toggle ───────────────────────────────────────
+        function toggleOtherFields(show) {
+          const wrap = document.getElementById('ivOtherFields');
+          wrap.classList.toggle('d-none', !show);
+          if (!show) {
+            wrap.querySelectorAll('input').forEach(i => i.value = '');
+          }
+        }
+        </script>
+        {% endif %}
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Shutdown Modal ──────────────────────────────────────────────────────── -->
+<div class="modal fade" id="shutdownModal" tabindex="-1" data-bs-backdrop="static">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title fw-bold"><i class="bi bi-power text-danger me-2"></i>Close Program</h5>
+      </div>
+      <div class="modal-body py-3">
+        <div class="alert alert-success d-flex align-items-center mb-3">
+          <i class="bi bi-shield-fill-check fs-5 me-2"></i>
+          <div><strong>All data is saved.</strong> Every record is stored safely in the database.</div>
+        </div>
+        <p class="mb-0 text-muted">Are you sure you want to close the Resume Database?</p>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-secondary px-4" data-bs-dismiss="modal">
+          <i class="bi bi-arrow-left me-1"></i> Go Back
+        </button>
+        <button type="button" class="btn btn-danger px-4" id="confirmShutdownBtn" onclick="doShutdown()">
+          <i class="bi bi-power me-1"></i> Yes, Close Program
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Delete Confirmation Modal ──────────────────────────────────────────── -->
+<div class="modal fade" id="deleteModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header border-0">
+        <h5 class="modal-title text-danger">
+          <i class="bi bi-exclamation-triangle-fill me-2"></i>Confirm Delete
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form id="deleteForm" method="POST">
+      <div class="modal-body">
+        <p class="mb-1">You are about to permanently delete the resume for:</p>
+        <p class="fw-bold fs-5 mb-3" id="deleteApplicantName"></p>
+        <div class="mb-2">
+          <label class="form-label fw-semibold">Reason for deletion <span class="text-danger">*</span></label>
+          <textarea name="delete_reason" id="deleteReason" class="form-control" rows="2"
+                    placeholder="e.g. Duplicate record, candidate withdrew, position filled…"
+                    required></textarea>
+          <div class="form-text text-muted">
+            <i class="bi bi-info-circle me-1"></i>This reason is saved permanently in the Audit Log.
+          </div>
+        </div>
+        <p class="text-muted small mb-0"><i class="bi bi-exclamation-triangle-fill text-danger me-1"></i>This cannot be undone. The resume file will also be deleted.</p>
+      </div>
+      <div class="modal-footer border-0">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-danger">
+          <i class="bi bi-trash3-fill me-1"></i>Yes, Delete
+        </button>
+      </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+function showShutdownModal() { new bootstrap.Modal(document.getElementById('shutdownModal')).show(); }
+function doShutdown() {
+  const btn = document.getElementById('confirmShutdownBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span> Closing…';
+  fetch('/shutdown', { method: 'POST' }).finally(() => {
+    document.body.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:Segoe UI,sans-serif;background:#f1f5f9;"><div style="background:white;border-radius:16px;padding:48px 56px;box-shadow:0 8px 32px rgba(0,0,0,0.1);text-align:center;max-width:420px;"><div style="font-size:3.5rem;color:#16a34a;margin-bottom:16px;">&#x2705;</div><h3 style="font-weight:700;color:#1e293b;margin-bottom:8px;">Program Closed</h3><p style="color:#64748b;margin-bottom:0;">All data has been saved successfully.<br>You can now close this browser tab.</p></div></div>`;
+  });
+}
+// ── Dynamic hiring status fields ──────────────────────────────────────────────
+function toggleStatusFields(status) {
+  document.getElementById('f_interview').style.display = (status === 'Interview Scheduled') ? '' : 'none';
+  document.getElementById('f_hired').style.display     = (status === 'Hired')               ? '' : 'none';
+  document.getElementById('f_rejected').style.display  = (status === 'Rejected')            ? '' : 'none';
+  // Show asterisk on Notes for Hired/Rejected
+  const req = (status === 'Hired' || status === 'Rejected' || status === 'Interview Scheduled');
+  document.getElementById('notesRequired').style.display = req ? '' : 'none';
+}
+// Run on page load to show the right fields for the current status
+document.addEventListener('DOMContentLoaded', () => {
+  const sel = document.getElementById('statusSelect');
+  if (sel) toggleStatusFields(sel.value);
+});
+
+function confirmDelete(id, name) {
+  document.getElementById('deleteApplicantName').textContent = name;
+  document.getElementById('deleteForm').action = '/delete/' + id;
+  document.getElementById('deleteReason').value = '';
+  new bootstrap.Modal(document.getElementById('deleteModal')).show();
+}
+</script>
+</body>
+</html>
