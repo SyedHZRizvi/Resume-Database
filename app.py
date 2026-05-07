@@ -57,13 +57,24 @@ if not ANTHROPIC_API_KEY:
 
 ANTHROPIC_BASE_URL  = os.environ.get('ANTHROPIC_BASE_URL', '')
 
-# ── Email / office settings (set in config.py) ────────────────────────────
+# ── Email / office settings ───────────────────────────────────────────────
+# Lookup order (each later step only used if the earlier returned a placeholder):
+#   1. config.py (local development)
+#   2. environment variable of the same NAME (production hosting like Render)
+#   3. default
+# This way the SAME codebase works locally (with config.py) and in the cloud
+# (with env vars) without any code change.
 def _cfg(name, default=''):
     try:
         import config as _c
-        return getattr(_c, name, default)
+        val = getattr(_c, name, None)
+        if val not in (None, '', 'your-api-key-here',
+                       'your-mail-password-or-bridge-password',
+                       'hr@your-company.com'):
+            return val
     except ImportError:
-        return default
+        pass
+    return os.environ.get(name, default)
 
 MAIL_SERVER          = _cfg('MAIL_SERVER',          'smtp.gmail.com')
 MAIL_PORT            = int(_cfg('MAIL_PORT',         587))
@@ -81,19 +92,31 @@ from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
-# ── Persistent secret key (auto-generated once, stored in .secret_key file) ──
-# This ensures login sessions survive app restarts without exposing a key
-# in source code. If the file is lost, all sessions are invalidated (users
-# must log in again) but no data is lost.
-_secret_key_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.secret_key')
-if os.path.exists(_secret_key_file):
-    with open(_secret_key_file, 'r') as _f:
-        app.secret_key = _f.read().strip()
+# ── Persistent secret key ─────────────────────────────────────────────────
+# Lookup order:
+#   1. FLASK_SECRET_KEY environment variable  (production — Render/Railway)
+#   2. .secret_key file in the app folder      (local dev)
+#   3. Auto-generate and save to file          (first run, local)
+# Setting FLASK_SECRET_KEY in production keeps logins alive across redeploys.
+_env_secret = os.environ.get('FLASK_SECRET_KEY', '').strip()
+if _env_secret:
+    app.secret_key = _env_secret
 else:
-    _sk = secrets.token_hex(32)
-    with open(_secret_key_file, 'w') as _f:
-        _f.write(_sk)
-    app.secret_key = _sk
+    _secret_key_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.secret_key')
+    if os.path.exists(_secret_key_file):
+        with open(_secret_key_file, 'r') as _f:
+            app.secret_key = _f.read().strip()
+    else:
+        _sk = secrets.token_hex(32)
+        try:
+            with open(_secret_key_file, 'w') as _f:
+                _f.write(_sk)
+        except OSError:
+            # Read-only filesystem (e.g. some hosted environments) — that's OK,
+            # we just won't persist the key. Sessions reset on redeploy until
+            # FLASK_SECRET_KEY env var is set.
+            pass
+        app.secret_key = _sk
 
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
 ALLOWED_EXTENSIONS = {'pdf', 'doc', 'docx', 'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tiff', 'tif'}
@@ -3315,20 +3338,34 @@ def _backfill_file_hashes():
         print(f'   [Hash Backfill] Warning: {e}')
 
 
-if __name__ == '__main__':
+# ─── Module-level startup ────────────────────────────────────────────────────
+# These run whether the app is launched directly (python app.py) OR imported
+# by a WSGI server like gunicorn (the production case on Render/Railway/etc.).
+# The double-run guard via _STARTUP_DONE prevents repeated init in dev reload.
+_STARTUP_DONE = False
+
+def _run_startup_tasks():
+    global _STARTUP_DONE
+    if _STARTUP_DONE:
+        return
+    _STARTUP_DONE = True
     init_db()
     create_default_admin()
-    # Start automatic background re-analysis so existing records are always
-    # up to date with the latest parsing logic — no user action needed.
+    # Background re-analysis & hash backfill — daemons, won't block shutdown
     threading.Thread(target=_auto_reanalyze_on_startup, daemon=True).start()
-    # Backfill file hashes for records uploaded before duplicate-detection
-    # was added — must run so the hash check actually works on old records.
-    threading.Thread(target=_backfill_file_hashes, daemon=True).start()
+    threading.Thread(target=_backfill_file_hashes,        daemon=True).start()
+
+_run_startup_tasks()
+
+
+if __name__ == '__main__':
+    # Local dev: read PORT from env (Render sets it; locally defaults to 5000)
+    port = int(os.environ.get('PORT', 5000))
     print()
     print("=" * 55)
     print("   RESUME DATABASE — Starting up...")
-    print("   Open your browser and visit:")
-    print("   --> http://localhost:5000")
+    print(f"   Open your browser and visit:")
+    print(f"   --> http://localhost:{port}")
     print("=" * 55)
     print()
-    app.run(debug=False, host='0.0.0.0', port=5000)
+    app.run(debug=False, host='0.0.0.0', port=port)

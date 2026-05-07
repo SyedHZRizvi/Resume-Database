@@ -1,0 +1,37 @@
+# ════════════════════════════════════════════════════════════════════════════
+#  Render.com — Infrastructure-as-Code blueprint
+#  Lets you deploy this app with a single click via:
+#    https://render.com/deploy?repo=https://github.com/SyedHZRizvi/Resume-Database
+# ════════════════════════════════════════════════════════════════════════════
+
+services:
+  - type: web
+    name: transcrypts-resume-db
+    runtime: python
+    plan: free                        # change to "starter" ($7/mo) for always-on
+    region: oregon                    # nearest Render region
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      # ── Secrets — fill these in via the Render dashboard, not here ─────────
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: MAIL_USERNAME
+        sync: false
+      - key: MAIL_PASSWORD
+        sync: false
+      - key: MAIL_FROM
+        sync: false
+      - key: MAIL_SERVER
+        sync: false
+      - key: MAIL_PORT
+        sync: false
+    # Persistent disk for SQLite + uploaded resumes (paid plans only)
+    # Uncomment after upgrading to "starter" plan or higher:
+    # disk:
+    #   name: transcrypts-data
+    #   mountPath: /opt/render/project/src/data
+    #   sizeGB: 1
