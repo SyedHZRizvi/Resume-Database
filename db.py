@@ -39,6 +39,90 @@ if USE_POSTGRES:
     import psycopg2.extras
 
 
+    # ── Auto-fix Supabase direct URLs (which are IPv6-only) ─────────────────
+    # Many cloud hosts (Render, Heroku, Fly.io) only have IPv4, but Supabase's
+    # "Direct connection" host  db.{ref}.supabase.co  resolves to IPv6 only.
+    # Attempting to use it produces  "Network is unreachable" .
+    # Supabase's "Connection pooler" hosts (aws-{N}-{region}.pooler.supabase.com)
+    # are dual-stack IPv4 + IPv6, so they work everywhere.
+    #
+    # If the user pasted the direct URL by mistake, we silently probe a list of
+    # known pooler endpoints to find the one that actually serves their project,
+    # then keep using it for the lifetime of the container.
+
+    import re as _re
+
+    _DIRECT_URL_RE = _re.compile(
+        r'^postgresql://postgres:(?P<pwd>[^@]+)@db\.(?P<ref>[^.]+)\.supabase\.co:5432/postgres',
+        _re.IGNORECASE
+    )
+
+    # Order tries the more likely regions first (Oregon = us-west-2)
+    _POOLER_HOSTS = [
+        'aws-1-us-west-2.pooler.supabase.com',
+        'aws-0-us-west-2.pooler.supabase.com',
+        'aws-1-us-east-1.pooler.supabase.com',
+        'aws-0-us-east-1.pooler.supabase.com',
+        'aws-1-us-east-2.pooler.supabase.com',
+        'aws-0-us-east-2.pooler.supabase.com',
+        'aws-1-us-west-1.pooler.supabase.com',
+        'aws-0-us-west-1.pooler.supabase.com',
+        'aws-1-ca-central-1.pooler.supabase.com',
+        'aws-0-ca-central-1.pooler.supabase.com',
+        'aws-0-eu-central-1.pooler.supabase.com',
+        'aws-0-eu-west-1.pooler.supabase.com',
+        'aws-0-eu-west-2.pooler.supabase.com',
+        'aws-0-ap-southeast-1.pooler.supabase.com',
+        'aws-0-ap-southeast-2.pooler.supabase.com',
+        'aws-0-ap-northeast-1.pooler.supabase.com',
+        'aws-0-ap-south-1.pooler.supabase.com',
+        'aws-0-sa-east-1.pooler.supabase.com',
+    ]
+
+
+    def _build_pooler_url(project_ref: str, password: str, host: str) -> str:
+        """Build a transaction-mode pooler URL for the given project."""
+        return (f'postgresql://postgres.{project_ref}:{password}'
+                f'@{host}:6543/postgres')
+
+
+    def _resolve_pooler_url(direct_url: str) -> str:
+        """
+        Given a direct Supabase URL, probe known pooler hosts until one accepts
+        the connection. Returns the working pooler URL, or the original URL if
+        no pooler works (caller will get a real error which is fine).
+        """
+        m = _DIRECT_URL_RE.match(direct_url)
+        if not m:
+            return direct_url   # Not a recognisable direct URL, leave alone
+        password    = m.group('pwd')
+        project_ref = m.group('ref')
+
+        # Allow an env var SUPABASE_POOLER_HOST to short-circuit the probe
+        forced = (os.environ.get('SUPABASE_POOLER_HOST') or '').strip()
+        candidates = [forced] + _POOLER_HOSTS if forced else _POOLER_HOSTS
+
+        for host in candidates:
+            url = _build_pooler_url(project_ref, password, host)
+            try:
+                conn = psycopg2.connect(url, sslmode='require', connect_timeout=6)
+                conn.close()
+                print(f'[db] Auto-resolved Supabase pooler host: {host}')
+                return url
+            except Exception:
+                continue
+
+        print('[db] Could not auto-resolve a working pooler host; '
+              'falling back to original DATABASE_URL.')
+        return direct_url
+
+
+    # Resolve once at import time so every connection uses the working URL.
+    # If DATABASE_URL is already a pooler URL, this is a no-op.
+    if _DIRECT_URL_RE.match(DATABASE_URL):
+        DATABASE_URL = _resolve_pooler_url(DATABASE_URL)
+
+
     class _PgRow(dict):
         """Mimics sqlite3.Row — supports both row['col'] and row[idx]."""
         def __init__(self, *args, **kwargs):
