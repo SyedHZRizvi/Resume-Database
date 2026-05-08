@@ -184,6 +184,30 @@ CAN_USERS    = ('super_admin',)
 CAN_SHUTDOWN = ('super_admin',)
 
 
+# ─── Production error logging ───────────────────────────────────────────────
+# When the app is running on Render, default Flask returns the generic "500
+# Internal Server Error" page with no detail visible to admins. This handler
+# writes the full traceback to stdout (which Render captures in its logs)
+# and includes a short error code in the response so we can correlate.
+@app.errorhandler(500)
+@app.errorhandler(Exception)
+def _log_unhandled_exception(error):
+    import traceback, sys, uuid
+    err_id = uuid.uuid4().hex[:8]
+    print(f'\n[ERROR {err_id}] Unhandled exception in {request.path}:',
+          file=sys.stderr, flush=True)
+    traceback.print_exc(file=sys.stderr)
+    print(f'[ERROR {err_id}] end\n', file=sys.stderr, flush=True)
+    # Re-raise non-HTTPExceptions so Flask returns a proper 500 page
+    from werkzeug.exceptions import HTTPException
+    if isinstance(error, HTTPException):
+        return error
+    return (f'<h1>500 Internal Server Error</h1>'
+            f'<p>Reference: <code>{err_id}</code></p>'
+            f'<p>Type: <code>{type(error).__name__}</code></p>'
+            f'<p>Message: <code>{str(error)[:300]}</code></p>'), 500
+
+
 @app.context_processor
 def inject_globals():
     """Inject variables into EVERY template automatically.
