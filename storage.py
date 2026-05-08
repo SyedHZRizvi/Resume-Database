@@ -60,6 +60,7 @@ def _sb_url(path: str) -> str:
 
 
 def _sb_save(filename: str, data: bytes, content_type: str = 'application/octet-stream'):
+    """Upload bytes to Supabase Storage. Raises a descriptive error on failure."""
     import requests
     headers = _sb_headers({
         'Content-Type':   content_type,
@@ -67,7 +68,18 @@ def _sb_save(filename: str, data: bytes, content_type: str = 'application/octet-
         'x-upsert':       'true',
     })
     r = requests.post(_sb_url(filename), headers=headers, data=data, timeout=60)
-    r.raise_for_status()
+    if not r.ok:
+        # Surface Supabase's actual error message instead of a generic
+        # "400 Client Error: Bad Request" so it's diagnosable.
+        try:
+            body = r.json()
+            detail = body.get('message') or body.get('error') or body.get('msg') or str(body)
+        except Exception:
+            detail = (r.text or '')[:300]
+        raise RuntimeError(
+            f"Supabase Storage upload failed ({r.status_code}): {detail} "
+            f"[bucket={SUPABASE_BUCKET}, file={filename}]"
+        )
 
 
 def _sb_read(filename: str) -> Optional[bytes]:
@@ -101,7 +113,16 @@ def _sb_signed_url(filename: str, expires_seconds: int = 3600) -> Optional[str]:
                       timeout=15)
     if r.status_code == 404:
         return None
-    r.raise_for_status()
+    if not r.ok:
+        try:
+            body = r.json()
+            detail = body.get('message') or body.get('error') or str(body)
+        except Exception:
+            detail = (r.text or '')[:300]
+        raise RuntimeError(
+            f"Supabase Storage signed-URL failed ({r.status_code}): {detail} "
+            f"[bucket={SUPABASE_BUCKET}, file={filename}]"
+        )
     data = r.json() or {}
     rel = data.get('signedURL') or data.get('signedUrl')
     if not rel:
