@@ -332,9 +332,13 @@ if USE_POSTGRES:
         conn = psycopg2.connect(DATABASE_URL,
                                  sslmode='require',
                                  connect_timeout=15)
-        # Disable prepared-statement caching so we are compatible with
-        # PgBouncer / Supabase's transaction-mode pooler (port 6543), which
-        # rejects most prepared statements and SET queries.
+        # Autocommit mode mirrors SQLite's default behaviour: each statement
+        # commits on success. Crucially this means a failed DDL inside a
+        # try/except (common pattern for "ADD COLUMN if not exists" style
+        # migrations) does NOT poison subsequent statements with
+        # "current transaction is aborted". This matches what the application
+        # code assumes since it already handles atomicity at the route level.
+        conn.set_session(autocommit=True)
         return _PgConnection(conn)
 
 
