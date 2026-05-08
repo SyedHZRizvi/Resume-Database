@@ -195,10 +195,17 @@ if USE_POSTGRES:
 
 
     def _open_pg() -> _PgConnection:
-        # psycopg2 understands the standard postgresql:// URI; sslmode is taken
-        # from the URL (Supabase requires sslmode=require, which the URL has by
-        # default — but we set it as a fallback in case it's missing).
-        return _PgConnection(psycopg2.connect(DATABASE_URL, sslmode='require'))
+        # psycopg2 understands the standard postgresql:// URI.
+        # We pass sslmode=require explicitly so it works whether or not the URL
+        # already includes one (Supabase always requires SSL).
+        # connect_timeout protects against hanging on network issues.
+        conn = psycopg2.connect(DATABASE_URL,
+                                 sslmode='require',
+                                 connect_timeout=15)
+        # Disable prepared-statement caching so we are compatible with
+        # PgBouncer / Supabase's transaction-mode pooler (port 6543), which
+        # rejects most prepared statements and SET queries.
+        return _PgConnection(conn)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
