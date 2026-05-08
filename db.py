@@ -160,6 +160,23 @@ if USE_POSTGRES:
     _RE_DATE_NOW     = re.compile(r"date\(\s*'now'\s*\)",     re.IGNORECASE)
     _RE_TIME_NOW     = re.compile(r"time\(\s*'now'\s*\)",     re.IGNORECASE)
 
+    # SQLite's case-insensitive collation has no Postgres equivalent.
+    # We translate three uses:
+    #   WHERE col = ? COLLATE NOCASE     →  WHERE LOWER(col) = LOWER(?)
+    #   ORDER BY col COLLATE NOCASE      →  ORDER BY LOWER(col)
+    #   <column DDL> COLLATE NOCASE      →  (stripped — case-sensitive in PG)
+    # The DDL strip means the UNIQUE constraint on username becomes
+    # case-sensitive, but Strategy-1 still handles every login query correctly.
+    _RE_COLLATE_EQ = re.compile(
+        r'(\b\w+(?:\.\w+)?)\s*=\s*(\?|%s|\'[^\']*\')\s+COLLATE\s+NOCASE',
+        re.IGNORECASE
+    )
+    _RE_COLLATE_ORDER = re.compile(
+        r'ORDER\s+BY\s+(\b\w+(?:\.\w+)?)\s+COLLATE\s+NOCASE',
+        re.IGNORECASE
+    )
+    _RE_COLLATE_STRIP = re.compile(r'\s+COLLATE\s+NOCASE', re.IGNORECASE)
+
 
     def _translate(query: str) -> tuple[str, bool]:
         """
@@ -181,6 +198,14 @@ if USE_POSTGRES:
         )
         q = _RE_DATE_NOW.sub("to_char(now(), 'YYYY-MM-DD')", q)
         q = _RE_TIME_NOW.sub("to_char(now(), 'HH24:MI:SS')", q)
+
+        # SQLite COLLATE NOCASE → Postgres LOWER()-based equivalents
+        # Order matters: do the equality and ORDER BY rewrites before the
+        # generic strip, so DDL appearances are removed but query semantics
+        # are preserved.
+        q = _RE_COLLATE_EQ.sub(r'LOWER(\1) = LOWER(\2)', q)
+        q = _RE_COLLATE_ORDER.sub(r'ORDER BY LOWER(\1)', q)
+        q = _RE_COLLATE_STRIP.sub('', q)
 
         # SQLite "INSERT OR IGNORE" / "INSERT OR REPLACE" → Postgres ON CONFLICT
         # (simplified; for complex cases callers should use ON CONFLICT explicitly)
