@@ -1722,7 +1722,9 @@ def _send_email(to_addr, subject, html_body, attachments=None):
 
     creds = _email_credentials()
     if not (creds['username'] and creds['password']):
-        return False, 'Email not configured (set MAIL_USERNAME and MAIL_PASSWORD in config.py).'
+        return False, ('Email not configured. Set MAIL_USERNAME, MAIL_PASSWORD, '
+                       'MAIL_SERVER (e.g. smtp.gmail.com), MAIL_PORT (587), and '
+                       'MAIL_FROM as environment variables on the host.')
 
     msg = MIMEMultipart('mixed')
     msg['From']    = creds['from'] or creds['username']
