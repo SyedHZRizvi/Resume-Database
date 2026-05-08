@@ -150,6 +150,17 @@ if USE_POSTGRES:
     _RE_INSERT_OR_REPLACE = re.compile(r'^\s*INSERT\s+OR\s+REPLACE\s+INTO\s+',
                                         re.IGNORECASE)
 
+    # SQLite datetime/date built-ins → Postgres equivalents.
+    # The TEXT columns store ISO-style strings, so we use to_char() to produce
+    # the same  YYYY-MM-DD HH:MM:SS  format SQLite would have produced.
+    _RE_DATETIME_NOW_LOCAL = re.compile(
+        r"datetime\(\s*'now'\s*,\s*'localtime'\s*\)", re.IGNORECASE
+    )
+    _RE_DATETIME_NOW = re.compile(r"datetime\(\s*'now'\s*\)", re.IGNORECASE)
+    _RE_DATE_NOW     = re.compile(r"date\(\s*'now'\s*\)",     re.IGNORECASE)
+    _RE_TIME_NOW     = re.compile(r"time\(\s*'now'\s*\)",     re.IGNORECASE)
+
+
     def _translate(query: str) -> tuple[str, bool]:
         """
         Translate SQLite-flavoured SQL into Postgres SQL.
@@ -157,13 +168,23 @@ if USE_POSTGRES:
         """
         q = query
 
-        # SQLite "INTEGER PRIMARY KEY AUTOINCREMENT" → Postgres SERIAL
+        # ── DDL: SQLite-only types & functions ──
+        # INTEGER PRIMARY KEY AUTOINCREMENT  →  SERIAL PRIMARY KEY
         q = _RE_AUTOINC.sub('SERIAL PRIMARY KEY', q)
 
+        # SQLite datetime/date functions  →  Postgres to_char(...)
+        q = _RE_DATETIME_NOW_LOCAL.sub(
+            "to_char(now(), 'YYYY-MM-DD HH24:MI:SS')", q
+        )
+        q = _RE_DATETIME_NOW.sub(
+            "to_char(now(), 'YYYY-MM-DD HH24:MI:SS')", q
+        )
+        q = _RE_DATE_NOW.sub("to_char(now(), 'YYYY-MM-DD')", q)
+        q = _RE_TIME_NOW.sub("to_char(now(), 'HH24:MI:SS')", q)
+
         # SQLite "INSERT OR IGNORE" / "INSERT OR REPLACE" → Postgres ON CONFLICT
-        q = _RE_INSERT_OR_IGNORE.sub('INSERT INTO ', q)        # simplified; ON CONFLICT
-        # (We don't have an obvious unique key here without parsing — callers should
-        #  use ON CONFLICT explicitly when needed.)
+        # (simplified; for complex cases callers should use ON CONFLICT explicitly)
+        q = _RE_INSERT_OR_IGNORE.sub('INSERT INTO ', q)
         q = _RE_INSERT_OR_REPLACE.sub('INSERT INTO ', q)
 
         # ? placeholders → %s
