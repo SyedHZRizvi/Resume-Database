@@ -463,10 +463,12 @@ def log_action(action, target='', details=''):
 
 def _has_role(*allowed_roles):
     """Return True if the current user has one of the given roles."""
-    from config import REQUIRE_LOGIN as _rl
-    if not _rl:
+    # Use the module-level REQUIRE_LOGIN — that variable already has a
+    # safe fallback for environments where config.py isn't present
+    # (e.g. Render, where settings come from env vars instead).
+    if not REQUIRE_LOGIN:
         return True   # login off → all actions allowed
-    return session.get('role') in allowed_roles
+    return session.get('user_role') in allowed_roles
 
 
 def role_required(*allowed_roles):
