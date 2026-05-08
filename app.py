@@ -268,6 +268,19 @@ def init_db():
             )
         ''')
 
+        # On Postgres the COLLATE NOCASE on username is stripped (no equivalent).
+        # We add a functional UNIQUE index on LOWER(username) so case-insensitive
+        # uniqueness is still enforced — i.e. "admin" and "Admin" can't both exist.
+        # On SQLite this same statement is a harmless no-op (it creates a normal
+        # unique index on lower(username) which complements the existing one).
+        try:
+            conn.execute(
+                'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower '
+                'ON users (LOWER(username))'
+            )
+        except Exception:
+            pass
+
         # ── Audit Log ─────────────────────────────────────────────────────────
         # Records every important action: who did what to which record and when.
         # This table is append-only — rows are never updated or deleted.
@@ -520,6 +533,24 @@ def make_unique_filename(original_filename):
     return f"{base}_{timestamp}{ext}"
 
 
+def _safe_int(value, default=0):
+    """
+    Coerce a value to int, returning `default` on any failure.
+    SQLite silently accepts strings for INTEGER columns; Postgres errors
+    with 'invalid input syntax for type integer'. This helper bridges
+    that gap whenever a parsed-from-resume value is bound to an INT column.
+    """
+    if value is None or value == '':
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default
+
+
 def compute_file_hash(file_obj):
     """Return the SHA-256 hex digest of an open file object.
 
@@ -663,8 +694,16 @@ def add_user():
         log_action('USER ADDED', username, f'Role: {ROLES[role]} (temp password set)')
         flash(f'User "{username}" ({ROLES[role]}) has been added. '
               f'They must change their password on first login.', 'success')
-    except sqlite3.IntegrityError:
-        flash(f'Username "{username}" already exists. Please choose another.', 'error')
+    except Exception as _e:
+        # SQLite raises sqlite3.IntegrityError, Postgres raises
+        # psycopg2.errors.UniqueViolation. We catch broadly and look at the
+        # message so this works on either backend.
+        msg = str(_e).lower()
+        if 'unique' in msg or 'duplicate' in msg:
+            flash(f'Username "{username}" already exists. Please choose another.',
+                  'error')
+        else:
+            flash(f'Could not add user: {_e}', 'error')
 
     return redirect(url_for('manage_users'))
 
@@ -1087,7 +1126,7 @@ def add_resume():
                     _pick(parsed.get('email'),             existing['email']),
                     _pick(parsed.get('phone'),             existing['phone']),
                     _pick(parsed.get('specialty'),         existing['specialty']),
-                    parsed.get('years_experience', 0) or existing['years_experience'] or 0,
+                    _safe_int(parsed.get('years_experience'), _safe_int(existing['years_experience'], 0)),
                     _pick(parsed.get('highest_education'), existing['highest_education']),
                     _pick(parsed.get('skills'),            existing['skills']),
                     update_id,
@@ -1295,7 +1334,7 @@ def add_bulk():
                           (parsed.get('linkedin_url') or '').strip(),
                           (parsed.get('github_url') or '').strip(),
                           specialty,
-                          parsed.get('years_experience', 0) or 0,
+                          _safe_int(parsed.get('years_experience'), 0),
                           (parsed.get('highest_education') or '').strip(),
                           (parsed.get('skills') or '').strip(),
                           filename,
@@ -2380,10 +2419,12 @@ def add_interview(applicant_id):
                  meeting_link or None, outcome, interview_notes)
             )
 
-        # Keep the applicant's hiring status / date in sync
+        # Keep the applicant's hiring status / date in sync.
+        # NB: SQL string literals must use single quotes (Postgres treats
+        # double quotes as identifier delimiters).
         conn.execute(
-            'UPDATE applicants SET interview_date=?, interview_time=?, interview_type=?, '
-            'hiring_status="Interview Scheduled" WHERE id=?',
+            "UPDATE applicants SET interview_date=?, interview_time=?, interview_type=?, "
+            "hiring_status='Interview Scheduled' WHERE id=?",
             (interview_date or None, interview_time or None, interview_type, applicant_id)
         )
         conn.commit()
@@ -2491,14 +2532,16 @@ def delete_interview(interview_id):
         ).fetchone()[0]
 
         if remaining == 0:
-            # No interviews left — revert to Under Review, clear dates
+            # No interviews left — revert to Under Review, clear dates.
+            # NB: SQL string literals MUST use single quotes — Postgres treats
+            # double-quoted text as identifiers (column / table names).
             conn.execute(
-                '''UPDATE applicants
-                   SET hiring_status  = "Under Review",
-                       interview_date = NULL,
-                       interview_time = NULL,
-                       interview_type = NULL
-                   WHERE id = ? AND hiring_status = "Interview Scheduled"''',
+                "UPDATE applicants "
+                "SET hiring_status='Under Review', "
+                "    interview_date=NULL, "
+                "    interview_time=NULL, "
+                "    interview_type=NULL "
+                "WHERE id=? AND hiring_status='Interview Scheduled'",
                 (applicant_id,)
             )
             flash('Interview record removed — status reset to Under Review.', 'success')
@@ -3462,7 +3505,7 @@ def api_careers_apply():
             (
                 name, email, phone or parsed.get('phone', ''),
                 parsed.get('specialty', position or ''),
-                parsed.get('years_experience', 0) or 0,
+                _safe_int(parsed.get('years_experience'), 0),
                 parsed.get('highest_education', ''),
                 parsed.get('skills', ''),
                 final_name,
@@ -3575,7 +3618,7 @@ def _auto_reanalyze_on_startup():
                     pick(parsed.get('linkedin_url'),      applicant['linkedin_url']),
                     pick(parsed.get('github_url'),        applicant['github_url']),
                     pick(parsed.get('specialty'),         applicant['specialty']),
-                    parsed.get('years_experience', 0) or applicant['years_experience'],
+                    _safe_int(parsed.get('years_experience'), _safe_int(applicant['years_experience'], 0)),
                     pick(parsed.get('highest_education'), applicant['highest_education']),
                     pick(parsed.get('skills'),            applicant['skills']),
                     applicant['id'],

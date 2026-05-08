@@ -177,6 +177,11 @@ if USE_POSTGRES:
     )
     _RE_COLLATE_STRIP = re.compile(r'\s+COLLATE\s+NOCASE', re.IGNORECASE)
 
+    # SQLite's LIKE is case-insensitive by default for ASCII; Postgres LIKE is
+    # case-sensitive. ILIKE is the Postgres operator for case-insensitive match.
+    # Match LIKE only as a SQL keyword (with whitespace boundary on both sides).
+    _RE_LIKE = re.compile(r'(\s)LIKE(\s)', re.IGNORECASE)
+
 
     def _translate(query: str) -> tuple[str, bool]:
         """
@@ -206,6 +211,11 @@ if USE_POSTGRES:
         q = _RE_COLLATE_EQ.sub(r'LOWER(\1) = LOWER(\2)', q)
         q = _RE_COLLATE_ORDER.sub(r'ORDER BY LOWER(\1)', q)
         q = _RE_COLLATE_STRIP.sub('', q)
+
+        # SQLite LIKE is case-insensitive; Postgres LIKE is case-sensitive.
+        # Translate LIKE → ILIKE to preserve the search behaviour the app
+        # has always had (resume search, name lookups, etc.).
+        q = _RE_LIKE.sub(r'\1ILIKE\2', q)
 
         # SQLite "INSERT OR IGNORE" / "INSERT OR REPLACE" → Postgres ON CONFLICT
         # (simplified; for complex cases callers should use ON CONFLICT explicitly)
