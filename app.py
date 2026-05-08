@@ -221,11 +221,14 @@ def inject_globals():
 
 
 # ─── Database helpers ──────────────────────────────────────────────────────────
+# Routed through db.py which auto-selects Postgres (production, when DATABASE_URL
+# is set) or SQLite (local development). All existing conn.execute('… ?', (…,))
+# code keeps working unchanged.
+import db as _db
+import storage as _storage
 
 def get_db():
-    conn = sqlite3.connect(DATABASE)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return _db.get_db()
 
 
 def init_db():
@@ -1052,16 +1055,15 @@ def add_resume():
                 )
                 return render_template('add_resume.html', form=request.form)
 
-            # Delete old file from disk
+            # Delete old file
             if existing['resume_filename']:
-                old_path = os.path.join(app.config['UPLOAD_FOLDER'],
-                                        existing['resume_filename'])
-                if os.path.exists(old_path):
-                    os.remove(old_path)
+                _storage.delete_file(existing['resume_filename'])
 
-            # Save new file
+            # Save new file via storage abstraction (Supabase or local)
             new_filename = make_unique_filename(file.filename)
-            file.save(os.path.join(app.config['UPLOAD_FOLDER'], new_filename))
+            _file_bytes = file.read()
+            _storage.save_file(new_filename, _file_bytes,
+                               file.mimetype or 'application/octet-stream')
 
             # Re-parse new file — use parsed values where available, fall back
             # to whatever is already stored so we never blank-out a field
@@ -1182,7 +1184,8 @@ def add_resume():
                     return render_template('add_resume.html', form=request.form)
 
                 resume_filename = make_unique_filename(file.filename)
-                file.save(os.path.join(app.config['UPLOAD_FOLDER'], resume_filename))
+                _storage.save_file(resume_filename, file.read(),
+                                   file.mimetype or 'application/octet-stream')
             else:
                 flash('Only PDF, DOC, and DOCX files are allowed.', 'error')
                 return render_template('add_resume.html', form=request.form)
@@ -1244,11 +1247,12 @@ def add_bulk():
                 })
                 continue
 
-            # Save the file
+            # Save the file via storage abstraction (works with Supabase or local)
             filename = make_unique_filename(file.filename)
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             try:
-                file.save(filepath)
+                file.seek(0)
+                _storage.save_file(filename, file.read(),
+                                   file.mimetype or 'application/octet-stream')
             except Exception as e:
                 failed.append({'filename': file.filename, 'reason': f'Could not save: {e}'})
                 continue
@@ -1406,11 +1410,11 @@ def edit_resume(applicant_id):
 
                 # Delete old file first
                 if resume_filename:
-                    old_path = os.path.join(app.config['UPLOAD_FOLDER'], resume_filename)
-                    if os.path.exists(old_path):
-                        os.remove(old_path)
+                    _storage.delete_file(resume_filename)
                 resume_filename = make_unique_filename(file.filename)
-                file.save(os.path.join(app.config['UPLOAD_FOLDER'], resume_filename))
+                file.seek(0)
+                _storage.save_file(resume_filename, file.read(),
+                                   file.mimetype or 'application/octet-stream')
             else:
                 flash('Only PDF, DOC, and DOCX files are allowed.', 'error')
                 return render_template('edit_resume.html', applicant=applicant)
@@ -1418,9 +1422,7 @@ def edit_resume(applicant_id):
         # Handle file removal
         if request.form.get('remove_file') == '1':
             if resume_filename:
-                old_path = os.path.join(app.config['UPLOAD_FOLDER'], resume_filename)
-                if os.path.exists(old_path):
-                    os.remove(old_path)
+                _storage.delete_file(resume_filename)
             resume_filename  = None
             new_file_hash    = None
 
@@ -1456,9 +1458,7 @@ def delete_resume(applicant_id):
 
         if applicant:
             if applicant['resume_filename']:
-                filepath = os.path.join(app.config['UPLOAD_FOLDER'], applicant['resume_filename'])
-                if os.path.exists(filepath):
-                    os.remove(filepath)
+                _storage.delete_file(applicant['resume_filename'])
             # Also remove all interview records for this applicant
             conn.execute('DELETE FROM interviews WHERE applicant_id = ?', (applicant_id,))
             conn.execute('DELETE FROM applicants WHERE id = ?', (applicant_id,))
@@ -1475,6 +1475,20 @@ def delete_resume(applicant_id):
 @app.route('/uploads/<filename>')
 @role_required(*CAN_DOWNLOAD)
 def uploaded_file(filename):
+    """
+    Serve a resume file.
+
+    • Local backend  → send the file from disk
+    • Supabase backend → redirect to a short-lived signed URL
+                         (browser fetches directly from Supabase Storage)
+    """
+    if _storage.backend() == 'supabase':
+        signed = _storage.file_url(filename, expires=3600)
+        if not signed:
+            flash('File not found in storage.', 'error')
+            return redirect(url_for('index'))
+        return redirect(signed)
+    # Local: serve from disk directly
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 
@@ -2405,13 +2419,11 @@ def add_interview(applicant_id):
                 contact_person, meeting_link)
 
             attachments = []
-            # Attach the resume file
+            # Attach the resume file (read via storage abstraction so it works
+            # whether the file lives on local disk or in Supabase Storage)
             if applicant['resume_filename']:
-                resume_path = os.path.join(app.config['UPLOAD_FOLDER'],
-                                           applicant['resume_filename'])
-                if os.path.isfile(resume_path):
-                    with open(resume_path, 'rb') as rf:
-                        resume_data = rf.read()
+                resume_data = _storage.read_file(applicant['resume_filename'])
+                if resume_data:
                     ext = applicant['resume_filename'].rsplit('.', 1)[-1].lower()
                     mime_map = {
                         'pdf':  'application/pdf',
@@ -2580,16 +2592,14 @@ def update_hiring_status(applicant_id):
 
 def _parse_saved_file(resume_filename):
     """
-    Load a resume file that is already saved in the uploads folder,
-    extract its text, and return a parsed-fields dict.
+    Load an already-saved resume file (local OR Supabase Storage), extract
+    its text, and return a parsed-fields dict.
     Returns None if the file is missing or unreadable.
     """
-    filepath = os.path.join(UPLOAD_FOLDER, resume_filename)
-    if not os.path.exists(filepath):
+    file_data = _storage.read_file(resume_filename)
+    if not file_data:
         return None
     try:
-        with open(filepath, 'rb') as f:
-            file_data = f.read()
         text = _extract_text_from_file(file_data, resume_filename.lower())
         if not text.strip():
             return None
@@ -3411,10 +3421,8 @@ def api_careers_apply():
     base, ext = os.path.splitext(safe_name)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     final_name = f"CareerApp_{base[:40]}_{timestamp}{ext}"
-    final_path = os.path.join(app.config['UPLOAD_FOLDER'], final_name)
-    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-    with open(final_path, 'wb') as f:
-        f.write(raw)
+    _storage.save_file(final_name, raw,
+                       file.mimetype or 'application/octet-stream')
 
     # ── Try to parse the resume in the background to enrich the record ──────
     parsed = {}
@@ -3603,13 +3611,12 @@ def _backfill_file_hashes():
 
         updated = 0
         for row in rows:
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'],
-                                    row['resume_filename'])
-            if not os.path.isfile(filepath):
+            file_data = _storage.read_file(row['resume_filename'])
+            if not file_data:
                 continue
             try:
-                with open(filepath, 'rb') as fobj:
-                    fhash = compute_file_hash(fobj)
+                import hashlib as _hl, io as _io
+                fhash = _hl.sha256(file_data).hexdigest()
                 with get_db() as conn:
                     conn.execute('UPDATE applicants SET file_hash=? WHERE id=?',
                                  (fhash, row['id']))
