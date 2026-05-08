@@ -2599,7 +2599,13 @@ def _parse_saved_file(resume_filename):
 
 
 def _extract_text_from_file(file_data, filename):
-    """Extract plain text from PDF, DOCX, or image file. Returns text string."""
+    """Extract plain text from PDF, DOCX, or image file. Returns text string.
+
+    For PDFs, falls back to bounding-box-based word extraction when default
+    extraction yields suspiciously long concatenated words — common in PDFs
+    with tight kerning where the standard extractor loses inter-word spaces
+    (e.g. "ALEXEY KUVSHINOV" coming back as "ALEXEYKUVSHINOV").
+    """
     import io
 
     if filename.endswith('.pdf'):
@@ -2607,7 +2613,35 @@ def _extract_text_from_file(file_data, filename):
         text_parts = []
         with pdfplumber.open(io.BytesIO(file_data)) as pdf:
             for page in pdf.pages:
-                t = page.extract_text()
+                t = page.extract_text() or ''
+                # Detect bad spacing — any word ≥ 16 chars without separators
+                # is almost certainly two real words concatenated
+                bad_kerning = any(len(w) >= 16 for w in t.split())
+                if bad_kerning:
+                    try:
+                        # Re-extract using positional words; pdfplumber respects
+                        # the underlying glyph bounding boxes so word breaks
+                        # match what the eye sees in the PDF reader
+                        words = page.extract_words(
+                            x_tolerance=2, y_tolerance=3,
+                            keep_blank_chars=False, use_text_flow=True
+                        )
+                        if words:
+                            # Group words into lines by similar 'top' coordinate
+                            lines, cur_top, cur_line = [], None, []
+                            for w in words:
+                                if cur_top is None or abs(w['top'] - cur_top) < 4:
+                                    cur_line.append(w['text'])
+                                    cur_top = w['top'] if cur_top is None else cur_top
+                                else:
+                                    lines.append(' '.join(cur_line))
+                                    cur_line = [w['text']]
+                                    cur_top = w['top']
+                            if cur_line:
+                                lines.append(' '.join(cur_line))
+                            t = '\n'.join(lines)
+                    except Exception:
+                        pass        # fall back to whatever extract_text gave us
                 if t:
                     text_parts.append(t)
         return '\n'.join(text_parts)
@@ -2633,6 +2667,23 @@ _SECTION_WORDS = {
     'highlights', 'key', 'core', 'additional', 'other', 'miscellaneous',
     'portfolio', 'internship', 'work', 'job', 'position', 'responsibilities',
     'goal', 'statement', 'declaration', 'appendix', 'annexure',
+}
+
+# 2-letter (and a few 3-letter) location codes — not real name tokens.
+# Catches address lines like "Toronto, ON" → reversed by comma logic into
+# "ON Toronto", which would otherwise pass the looks-like-a-name checks.
+_LOCATION_CODES = {
+    # Canadian provinces & territories
+    'on','bc','qc','ab','mb','sk','ns','nb','pe','nl','nt','yt','nu',
+    # US states
+    'al','ak','az','ar','ca','co','ct','de','fl','ga','hi','id','il','in','ia',
+    'ks','ky','la','me','md','ma','mi','mn','ms','mo','mt','ne','nv','nh','nj',
+    'nm','ny','nc','nd','oh','ok','or','pa','ri','sc','sd','tn','tx','ut','vt',
+    'va','wa','wv','wi','wy','dc',
+    # Country / region codes
+    'usa','uk','eu','uae','ksa','can','gbr','aus','ind','pak',
+    # Common non-name words that can appear in address-style lines
+    'street','ave','avenue','road','blvd','suite','apt','floor','postal','zip',
 }
 
 # Job-title words that are sometimes mistakenly picked up as the applicant's name
@@ -2696,6 +2747,11 @@ def _looks_like_name(line):
     if any(w.lower() in _TITLE_WORDS for w in words):
         return False
 
+    # Reject if ANY word is a known location code / address word
+    # (catches "ON Toronto" produced from a reversed "Toronto, ON" address line)
+    if any(w.lower() in _LOCATION_CODES for w in words):
+        return False
+
     # Reject words that EMBED section-heading text as a substring.
     # This catches concatenated headings like "Coretechnicalskills" (contains "skills"),
     # template watermarks like "ResumeAI" (contains "resume"), etc.
@@ -2722,16 +2778,62 @@ def _normalise_name_line(ln):
     Clean up a raw text line before checking if it looks like a name.
 
     Handles:
-      - ALL-CAPS lines          : "ALEXEY KUVSHINOV"  → "Alexey Kuvshinov"
-      - Last, First format      : "ALI, AL-MAHMUD"    → "Ali Al-Mahmud"
-      - Trailing punctuation    : "John Smith."       → "John Smith"
+      - ALL-CAPS lines          : "ALEXEY KUVSHINOV"   → "Alexey Kuvshinov"
+      - Letter-spaced styling   : "A L I , A L-M A H M U D"
+                                                       → "Ali Al-Mahmud"
+      - Last, First format      : "ALI, AL-MAHMUD"     → "Ali Al-Mahmud"
+      - Trailing punctuation    : "John Smith."        → "John Smith"
+      - Inline contact info     : "ALEXEY KUVSHINOV lyoha_@hotmail.com" →
+                                  "Alexey Kuvshinov"  (email stripped)
+
+    Does NOT swap parts when the comma separates an address —
+    e.g. "Toronto, ON" stays as "Toronto, ON" (and is later rejected by
+    _looks_like_name's location-code filter).
     """
+    import re
     ln = ln.strip().rstrip('.,;')
-    # "LAST, FIRST" or "Last, First" → "First Last"
+
+    # Strip inline contact info that some PDFs render on the same line as the name
+    # (emails, URLs, phone numbers). After removal we may be left with just the name.
+    ln = re.sub(r'[\w.+\-]+@[\w\-]+\.[\w.]+', '', ln)            # email
+    ln = re.sub(r'https?://\S+|www\.\S+', '', ln, flags=re.I)    # URLs
+    ln = re.sub(r'[\+\(]?\d[\d\s\(\)\-\.]{7,18}\d', '', ln)      # phone numbers
+    ln = re.sub(r'\s{2,}', ' ', ln).strip(' \t,;|·•-–—')
+
+    # ── Collapse "letter-spaced" stylised lines ──────────────────────────────
+    # Some PDFs render names with letterspacing like "A L I  A L-M A H M U D"
+    # (visually striking, but the extractor sees each letter as a separate word).
+    # If at least 4 of the tokens are single uppercase letters, treat the whole
+    # line as letter-spaced and collapse adjacent single-letter tokens into words.
+    tokens = ln.split()
+    single_upper = sum(1 for t in tokens if len(t) == 1 and t.isalpha() and t.isupper())
+    if single_upper >= 4:
+        rebuilt, current = [], []
+        for tok in tokens:
+            if len(tok) == 1 and tok.isalpha():
+                current.append(tok)
+            else:
+                if current:
+                    rebuilt.append(''.join(current))
+                    current = []
+                rebuilt.append(tok)
+        if current:
+            rebuilt.append(''.join(current))
+        ln = ' '.join(rebuilt)
+        # Tidy spaces around punctuation introduced by the rebuild
+        ln = re.sub(r'\s*([,\-])\s*', r'\1', ln)
+
+    # "LAST, FIRST" → "First Last", but only when neither side looks
+    # like a location/address fragment
     if ',' in ln:
         parts = [p.strip() for p in ln.split(',', 1)]
         if len(parts) == 2 and parts[0] and parts[1]:
-            ln = f"{parts[1]} {parts[0]}"
+            both_words = parts[0].split() + parts[1].split()
+            looks_like_address = any(
+                w.lower() in _LOCATION_CODES for w in both_words
+            )
+            if not looks_like_address:
+                ln = f"{parts[1]} {parts[0]}"
     # Convert ALL-CAPS to title case
     if ln.isupper():
         ln = ln.title()
@@ -2788,6 +2890,9 @@ def _smart_parse(text):
     name_found = False
 
     # Strategy 1: neighbourhood of the email line
+    # Note: we do NOT skip the email line itself — _normalise_name_line strips
+    # any inline email/phone/url, so a line like "ALEXEY KUVSHINOV lyoha@..."
+    # becomes a clean candidate "Alexey Kuvshinov".
     if email_line_idx is not None:
         window_start = max(0, email_line_idx - 6)
         window_end   = min(len(lines), email_line_idx + 6)
@@ -2796,10 +2901,8 @@ def _smart_parse(text):
         window.sort(key=lambda ln: abs(lines.index(ln) - email_line_idx)
                     if ln in lines else 99)
         for ln in window:
-            if result['email'] and result['email'] in ln:
-                continue          # skip the email line itself
             candidate = _normalise_name_line(ln)
-            if _looks_like_name(candidate):
+            if candidate and _looks_like_name(candidate):
                 result['name'] = candidate
                 name_found = True
                 break
@@ -2809,12 +2912,8 @@ def _smart_parse(text):
     # Scanning too far down risks picking up company names, degree titles, etc.
     if not name_found:
         for ln in lines[:10]:
-            if result['email'] and result['email'] in ln:
-                continue
-            if result['phone'] and result['phone'].replace(' ', '') in ln.replace(' ', ''):
-                continue
             candidate = _normalise_name_line(ln)
-            if _looks_like_name(candidate):
+            if candidate and _looks_like_name(candidate):
                 result['name'] = candidate
                 break
 
