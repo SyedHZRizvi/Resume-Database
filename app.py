@@ -32,7 +32,17 @@ try:
     from config import REQUIRE_LOGIN as _require_login
     REQUIRE_LOGIN = bool(_require_login)
 except ImportError:
-    REQUIRE_LOGIN = False
+    # Default: TRUE (require login) in any env where DATABASE_URL is set
+    # i.e. cloud production; FALSE only on local dev where no Postgres URL.
+    # Can be explicitly overridden via REQUIRE_LOGIN env var ("true"/"false").
+    _env_login = (os.environ.get('REQUIRE_LOGIN') or '').strip().lower()
+    if _env_login in ('1', 'true', 'yes', 'on'):
+        REQUIRE_LOGIN = True
+    elif _env_login in ('0', 'false', 'no', 'off'):
+        REQUIRE_LOGIN = False
+    else:
+        # Implicit default: require login when running on a hosted DB
+        REQUIRE_LOGIN = bool((os.environ.get('DATABASE_URL') or '').strip())
 
 try:
     from config import SESSION_TIMEOUT_MINUTES as _stm
@@ -1768,22 +1778,35 @@ def _send_email(to_addr, subject, html_body, attachments=None):
         msg.attach(part)
 
     try:
-        # Proton Mail Bridge (127.0.0.1) uses plain SMTP locally — no TLS needed.
-        # All other servers (Gmail, Outlook, etc.) use STARTTLS.
-        if creds['server'] == '127.0.0.1':
-            with smtplib.SMTP(creds['server'], creds['port'], timeout=15) as s:
-                s.ehlo()
-                s.login(creds['username'], creds['password'])
-                s.sendmail(creds['username'], to_addr, msg.as_bytes())
-        else:
-            with smtplib.SMTP(creds['server'], creds['port'], timeout=15) as s:
-                s.ehlo()
+        # Single send path that works for every SMTP provider:
+        #   • Try STARTTLS for security
+        #   • If the server doesn't support it (e.g. Proton Bridge on
+        #     127.0.0.1:1025), catch SMTPNotSupportedError and continue
+        #     in plaintext — the connection is to localhost anyway
+        #   • Re-EHLO after STARTTLS per RFC 3207 — without this, some
+        #     servers (notably Office365) reject AUTH
+        with smtplib.SMTP(creds['server'], creds['port'], timeout=20) as s:
+            s.ehlo()
+            try:
                 s.starttls()
-                s.login(creds['username'], creds['password'])
-                s.sendmail(creds['username'], to_addr, msg.as_bytes())
+                s.ehlo()                       # required after STARTTLS
+            except smtplib.SMTPNotSupportedError:
+                pass                            # plaintext fallback (Bridge etc.)
+            s.login(creds['username'], creds['password'])
+            s.sendmail(creds['username'], to_addr, msg.as_bytes())
         return True, ''
+    except smtplib.SMTPAuthenticationError as exc:
+        return False, ('SMTP login failed — check MAIL_USERNAME and MAIL_PASSWORD. '
+                       f'Server said: {exc.smtp_error.decode(errors="replace") if isinstance(exc.smtp_error, bytes) else exc.smtp_error}')
+    except smtplib.SMTPRecipientsRefused as exc:
+        return False, f'Recipient rejected: {to_addr} — {exc.recipients}'
+    except smtplib.SMTPConnectError as exc:
+        return False, ('Cannot connect to SMTP server — check MAIL_SERVER and MAIL_PORT. '
+                       f'Server said: {exc}')
+    except (smtplib.SMTPServerDisconnected, ConnectionRefusedError) as exc:
+        return False, f'SMTP server disconnected — check MAIL_SERVER/MAIL_PORT. ({exc})'
     except Exception as exc:
-        return False, str(exc)
+        return False, f'{type(exc).__name__}: {exc}'
 
 
 def _fmt_date(d):
@@ -3300,7 +3323,12 @@ def parse_resume():
 @app.route('/open-config', methods=['POST'])
 @role_required(*CAN_USERS)
 def open_config():
-    """Open config.py in Notepad so the user can paste their API key."""
+    """Open config.py in Notepad so the user can paste their API key.
+    Local Windows desktop only — disabled on Linux / cloud hosts where
+    notepad.exe doesn't exist and config.py isn't even present."""
+    if os.name != 'nt':
+        return jsonify({'status': 'unsupported',
+                        'message': 'Use environment variables on cloud hosts.'}), 400
     import subprocess
     config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.py')
     try:
@@ -3577,10 +3605,56 @@ def api_status():
     return jsonify({'configured': configured})
 
 
+@app.route('/admin/email/test', methods=['GET', 'POST'])
+@role_required(*CAN_USERS)
+def admin_email_test():
+    """
+    Test the SMTP configuration by sending a small email to a target address.
+    GET /admin/email/test?to=you@example.com  →  JSON with ok / err
+    POST /admin/email/test (form: to=…)       →  same
+
+    Useful for diagnosing Render env var setup without scheduling a fake
+    interview. Returns the actual SMTP error string when sending fails so
+    you can see exactly what the SMTP server complained about.
+    """
+    to = (request.values.get('to') or '').strip()
+    if not to:
+        creds = _email_credentials()
+        return jsonify({
+            'ok':         False,
+            'message':    'Pass ?to=you@example.com to test email sending',
+            'config_seen': {
+                'server':   creds.get('server'),
+                'port':     creds.get('port'),
+                'username': creds.get('username'),
+                'from':     creds.get('from'),
+                'password_set': bool(creds.get('password')),
+            },
+        })
+    html = (f'<p>This is a test email from the TransCrypts Resume Database.</p>'
+            f'<p>If you received this, your SMTP env vars on the host are working.</p>'
+            f'<p style="color:#6b7280;font-size:12px">Sent at '
+            f'{datetime.now().isoformat(timespec="seconds")}.</p>')
+    ok, err = _send_email(to, 'TransCrypts: SMTP test email', html)
+    return jsonify({'ok': ok, 'message': err if not ok else f'Sent to {to}'})
+
+
 @app.route('/shutdown', methods=['POST'])
 @role_required(*CAN_SHUTDOWN)
 def shutdown():
-    """Safely shut down the Flask server after confirming all data is committed."""
+    """Safely shut down the Flask server after confirming all data is committed.
+
+    DESKTOP ONLY — disabled on cloud hosts because killing the gunicorn
+    worker on Render would just cause a crash/restart cycle and exposes
+    a DoS vector on misconfigured deploys.
+    """
+    if (os.environ.get('DATABASE_URL') or '').strip():
+        return jsonify({
+            'status': 'disabled',
+            'message': 'Shutdown is disabled on cloud deployments. '
+                       'Use the hosting provider\'s dashboard to stop/restart.'
+        }), 400
+
     def _stop():
         # Brief pause so the response reaches the browser before the process exits
         import time
@@ -3707,7 +3781,12 @@ def _backfill_file_hashes():
 # ─── Module-level startup ────────────────────────────────────────────────────
 # These run whether the app is launched directly (python app.py) OR imported
 # by a WSGI server like gunicorn (the production case on Render/Railway/etc.).
-# The double-run guard via _STARTUP_DONE prevents repeated init in dev reload.
+# Two protection layers:
+#  1. _STARTUP_DONE: prevents double-run within a single Python process
+#  2. Postgres advisory lock: when running with multiple gunicorn workers,
+#     only the worker that grabs the lock runs the heavy tasks
+#     (re-analysis & hash backfill). Without this, every worker would
+#     re-download every resume on every cold start.
 _STARTUP_DONE = False
 
 def _run_startup_tasks():
@@ -3717,9 +3796,32 @@ def _run_startup_tasks():
     _STARTUP_DONE = True
     init_db()
     create_default_admin()
-    # Background re-analysis & hash backfill — daemons, won't block shutdown
-    threading.Thread(target=_auto_reanalyze_on_startup, daemon=True).start()
-    threading.Thread(target=_backfill_file_hashes,        daemon=True).start()
+
+    # ── Heavy tasks: only one worker should run these ────────────────────────
+    def _exclusive_heavy_tasks():
+        # Try to grab a Postgres advisory lock; only the winning worker runs.
+        # SQLite (local dev) doesn't support advisory locks, so fall back to
+        # always-run there — single process anyway.
+        try:
+            if _db.dialect() == 'postgres':
+                with _db.get_db() as _conn:
+                    cur = _conn.execute("SELECT pg_try_advisory_lock(8174_3917_2024)")
+                    got = cur.fetchone()
+                    got = got[0] if got else False
+                if not got:
+                    return       # another worker has the lock, skip
+        except Exception:
+            pass                  # if locking fails, run anyway — at-most-twice is OK
+        try:
+            _auto_reanalyze_on_startup()
+        except Exception as e:
+            print(f'[startup] re-analyze failed: {e}')
+        try:
+            _backfill_file_hashes()
+        except Exception as e:
+            print(f'[startup] hash backfill failed: {e}')
+
+    threading.Thread(target=_exclusive_heavy_tasks, daemon=True).start()
 
 _run_startup_tasks()
 
