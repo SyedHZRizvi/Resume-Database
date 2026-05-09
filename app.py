@@ -32,17 +32,11 @@ try:
     from config import REQUIRE_LOGIN as _require_login
     REQUIRE_LOGIN = bool(_require_login)
 except ImportError:
-    # Default: TRUE (require login) in any env where DATABASE_URL is set
-    # i.e. cloud production; FALSE only on local dev where no Postgres URL.
-    # Can be explicitly overridden via REQUIRE_LOGIN env var ("true"/"false").
+    # Default: FALSE — same behaviour as localhost. The URL "just works"
+    # without a login screen. To turn login on later, set REQUIRE_LOGIN=true
+    # as an env var on the host (Render dashboard → Environment).
     _env_login = (os.environ.get('REQUIRE_LOGIN') or '').strip().lower()
-    if _env_login in ('1', 'true', 'yes', 'on'):
-        REQUIRE_LOGIN = True
-    elif _env_login in ('0', 'false', 'no', 'off'):
-        REQUIRE_LOGIN = False
-    else:
-        # Implicit default: require login when running on a hosted DB
-        REQUIRE_LOGIN = bool((os.environ.get('DATABASE_URL') or '').strip())
+    REQUIRE_LOGIN = _env_login in ('1', 'true', 'yes', 'on')
 
 try:
     from config import SESSION_TIMEOUT_MINUTES as _stm
