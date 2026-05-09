@@ -1565,70 +1565,20 @@ def uploaded_file(filename):
 
 # ─── Email helpers ─────────────────────────────────────────────────────────────
 
-# ── Auto-created Ethereal test SMTP (used as last-resort fallback) ───────────
-# When no real SMTP is configured (i.e. the app is on a fresh cloud deploy
-# without MAIL_USERNAME / MAIL_PASSWORD set), we transparently create a
-# disposable Ethereal.email test account so the email flow still works
-# end-to-end. Sent messages don't reach real inboxes — they appear in the
-# Ethereal web UI at https://ethereal.email/messages — but it lets HR test
-# the workflow without first going through Proton/Gmail SMTP setup.
-#
-# The credentials are cached in-process for the container's lifetime.
-_ETHEREAL_CACHE = {'creds': None, 'tried': False}
-
-def _get_ethereal_creds():
-    """Fetch / cache a disposable Ethereal SMTP test account."""
-    if _ETHEREAL_CACHE['creds']:
-        return _ETHEREAL_CACHE['creds']
-    if _ETHEREAL_CACHE['tried']:
-        return None                     # already tried and failed; don't retry
-    _ETHEREAL_CACHE['tried'] = True
-    try:
-        import urllib.request, json as _json
-        req = urllib.request.Request(
-            'https://api.nodemailer.com/user',
-            data=_json.dumps({'requestor': 'transcrypts-resume-db',
-                              'version': '1.0'}).encode(),
-            headers={'Content-Type': 'application/json'},
-            method='POST',
-        )
-        with urllib.request.urlopen(req, timeout=15) as r:
-            body = _json.loads(r.read())
-        creds = {
-            'server':   body['smtp']['host'],
-            'port':     int(body['smtp']['port']),
-            'username': body['user'],
-            'password': body['pass'],
-            'from':     f"TransCrypts HR (test) <{body['user']}>",
-            'webmail':  body.get('web', 'https://ethereal.email'),
-            '__test':   True,
-        }
-        _ETHEREAL_CACHE['creds'] = creds
-        print(f"[email] Auto-created Ethereal test SMTP: user={creds['username']} "
-              f"webmail={creds['webmail']}")
-        return creds
-    except Exception as e:
-        print(f"[email] Could not create Ethereal fallback account: {e}")
-        return None
-
-
 def _email_credentials():
     """
     Read email credentials in this priority order:
       1. config.py (local development)
-      2. MAIL_* environment variables (cloud / production via _cfg fallback)
-      3. Auto-created Ethereal test account (so email never silently breaks)
+      2. MAIL_* environment variables (cloud / production via module-level _cfg)
 
-    Step 3 means HR can use the Schedule Interview button on day one without
-    first wiring up Proton/Gmail SMTP. Sent emails appear in Ethereal's
-    public inbox (https://ethereal.email/messages) keyed to the auto-created
-    user — handy for verifying the workflow before going live.
+    If neither yields valid credentials, the caller (_send_email) returns a
+    clear "not configured" error and the interview save still succeeds —
+    only the email notification is skipped.
     """
-    creds = None
     try:
         import importlib, config as _c
         importlib.reload(_c)
-        creds = {
+        return {
             'server':   getattr(_c, 'MAIL_SERVER',   '') or MAIL_SERVER,
             'port':     int(getattr(_c, 'MAIL_PORT', 0) or MAIL_PORT or 587),
             'username': getattr(_c, 'MAIL_USERNAME', '') or MAIL_USERNAME,
@@ -1636,27 +1586,14 @@ def _email_credentials():
             'from':     getattr(_c, 'MAIL_FROM',     '') or MAIL_FROM,
         }
     except Exception:
-        creds = {'server': MAIL_SERVER, 'port': MAIL_PORT,
-                 'username': MAIL_USERNAME, 'password': MAIL_PASSWORD,
-                 'from': MAIL_FROM}
-
-    # If the user hasn't configured real credentials, fall back to Ethereal
-    # so the email code path actually exercises end-to-end.
-    if not (creds.get('username') and creds.get('password')):
-        eth = _get_ethereal_creds()
-        if eth:
-            return eth
-    return creds
+        return {'server': MAIL_SERVER, 'port': MAIL_PORT,
+                'username': MAIL_USERNAME, 'password': MAIL_PASSWORD,
+                'from': MAIL_FROM}
 
 
 def _email_enabled():
     creds = _email_credentials()
     return bool(creds.get('username') and creds.get('password'))
-
-
-def _email_is_test_mode():
-    """True when the credentials in use are the Ethereal fallback (test inbox)."""
-    return bool(_email_credentials().get('__test'))
 
 
 def _ics_escape(text):
