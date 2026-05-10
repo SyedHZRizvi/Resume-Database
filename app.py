@@ -1781,21 +1781,28 @@ def _send_email(to_addr, subject, html_body, attachments=None):
 
     try:
         # Single send path that works for every SMTP provider:
-        #   • Try STARTTLS for security
-        #   • If the server doesn't support it (e.g. Proton Bridge on
-        #     127.0.0.1:1025), catch SMTPNotSupportedError and continue
-        #     in plaintext — the connection is to localhost anyway
+        #   • Port 465 → implicit SSL (SMTP_SSL)
+        #   • Any other port → plain SMTP, opportunistic STARTTLS
         #   • Re-EHLO after STARTTLS per RFC 3207 — without this, some
-        #     servers (notably Office365) reject AUTH
-        with smtplib.SMTP(creds['server'], creds['port'], timeout=20) as s:
-            s.ehlo()
-            try:
-                s.starttls()
-                s.ehlo()                       # required after STARTTLS
-            except smtplib.SMTPNotSupportedError:
-                pass                            # plaintext fallback (Bridge etc.)
-            s.login(creds['username'], creds['password'])
-            s.sendmail(creds['username'], to_addr, msg.as_bytes())
+        #     servers (notably Office 365) reject AUTH
+        #   • 30s socket timeout caps how long we wait — under gunicorn's
+        #     120s worker timeout even when sending to N interviewers
+        if int(creds['port']) == 465:
+            smtp_class = smtplib.SMTP_SSL
+            with smtp_class(creds['server'], creds['port'], timeout=30) as s:
+                s.ehlo()
+                s.login(creds['username'], creds['password'])
+                s.sendmail(creds['username'], to_addr, msg.as_bytes())
+        else:
+            with smtplib.SMTP(creds['server'], creds['port'], timeout=30) as s:
+                s.ehlo()
+                try:
+                    s.starttls()
+                    s.ehlo()                       # required after STARTTLS
+                except smtplib.SMTPNotSupportedError:
+                    pass                            # plaintext fallback (Bridge etc.)
+                s.login(creds['username'], creds['password'])
+                s.sendmail(creds['username'], to_addr, msg.as_bytes())
         return True, ''
     except smtplib.SMTPAuthenticationError as exc:
         return False, ('SMTP login failed — check MAIL_USERNAME and MAIL_PASSWORD. '
