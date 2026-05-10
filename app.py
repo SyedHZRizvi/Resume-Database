@@ -3711,6 +3711,45 @@ def api_status():
     return jsonify({'configured': configured})
 
 
+@app.route('/admin/email/preview/<kind>')
+@role_required(*CAN_USERS)
+def admin_email_preview(kind):
+    """
+    Render the full candidate or interviewer email HTML in the browser so
+    you can see exactly what gets sent — without scheduling a fake interview
+    or waiting for SMTP delivery.
+
+    Use:
+      /admin/email/preview/candidate?type=In-Person
+      /admin/email/preview/candidate?type=Video
+      /admin/email/preview/interviewer?type=In-Person
+    """
+    fake_applicant = {
+        'name':            'Sample Candidate',
+        'email':           'sample@example.com',
+        'specialty':       'Software Engineer',
+        'resume_filename': None,
+    }
+    iv_type  = (request.args.get('type') or 'In-Person').strip()
+    position = 'Senior Software Engineer'
+    contact  = 'Mr. Mesum Rizvi'
+    meet     = ''
+    if iv_type == 'Video':
+        meet = _generate_jitsi_link(0, position)
+
+    if kind == 'candidate':
+        html = _candidate_email_html(
+            fake_applicant, '2026-05-15', '10:00 AM',
+            iv_type, position, contact, meet)
+    elif kind == 'interviewer':
+        html = _interviewer_email_html(
+            fake_applicant, position, '2026-05-15', '10:00 AM',
+            iv_type, 'Sample Interviewer', contact, meet)
+    else:
+        return ('Unknown preview kind. Use "candidate" or "interviewer".', 400)
+    return html
+
+
 @app.route('/admin/email/test', methods=['GET', 'POST'])
 @role_required(*CAN_USERS)
 def admin_email_test():
