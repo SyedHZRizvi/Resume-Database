@@ -2489,81 +2489,99 @@ def add_interview(applicant_id):
         )
         conn.commit()
 
-    position     = interview_position or (applicant['specialty'] or 'the open position').strip()
-    email_results = []
+    position = interview_position or (applicant['specialty'] or 'the open position').strip()
 
-    # ── Email to candidate ────────────────────────────────────────────────────
+    # ── Build all emails in-request, then SEND THEM IN A BACKGROUND THREAD ───
+    # The interview is already saved to Postgres above. Sending email is now
+    # fully fire-and-forget, so even a hanging SMTP server (e.g. Proton blocking
+    # cloud IPs and timing out after 30s × N recipients) cannot kill the
+    # gunicorn worker or 500 the user's browser. Failures are logged via
+    # log_action and visible in the audit page.
+    pending_emails = []   # list of (kind, to, subject, html, attachments)
+
     if send_candidate and applicant['email']:
         html = _candidate_email_html(
             applicant, interview_date, interview_time,
             interview_type, position, contact_person, meeting_link)
-        ok, err = _send_email(
+        pending_emails.append((
+            'Candidate',
             applicant['email'],
             f"Interview Invitation — {position} at {COMPANY_NAME}",
-            html)
-        email_results.append(
-            f"Candidate ({applicant['email']}): {'sent ✓' if ok else f'FAILED — {err}'}")
-    elif send_candidate and not applicant['email']:
-        email_results.append('Candidate email not sent — no email address on record.')
+            html, None
+        ))
 
-    # ── Email to each interviewer ─────────────────────────────────────────────
     if send_interviewer:
+        # Read the resume bytes ONCE so all interviewer emails reuse them
+        resume_attachment = None
+        if applicant['resume_filename']:
+            resume_data = _storage.read_file(applicant['resume_filename'])
+            if resume_data:
+                ext = applicant['resume_filename'].rsplit('.', 1)[-1].lower()
+                mime_map = {
+                    'pdf':  'application/pdf',
+                    'docx': 'application/vnd.openxmlformats-officedocument'
+                            '.wordprocessingml.document',
+                    'doc':  'application/msword'
+                }
+                resume_attachment = (
+                    f"{applicant['name']} — Resume.{ext}",
+                    resume_data,
+                    mime_map.get(ext, 'application/octet-stream')
+                )
+
         for iv_name, iv_desig, iv_email in interviewers:
             if not iv_email:
-                email_results.append(
-                    f'Interviewer {iv_name}: no email address — notification skipped.')
                 continue
-
             html = _interviewer_email_html(
                 applicant, position, interview_date, interview_time,
-                interview_type, iv_name,
-                contact_person, meeting_link)
+                interview_type, iv_name, contact_person, meeting_link)
 
             attachments = []
-            # Attach the resume file (read via storage abstraction so it works
-            # whether the file lives on local disk or in Supabase Storage)
-            if applicant['resume_filename']:
-                resume_data = _storage.read_file(applicant['resume_filename'])
-                if resume_data:
-                    ext = applicant['resume_filename'].rsplit('.', 1)[-1].lower()
-                    mime_map = {
-                        'pdf':  'application/pdf',
-                        'docx': 'application/vnd.openxmlformats-officedocument'
-                                '.wordprocessingml.document',
-                        'doc':  'application/msword'
-                    }
-                    attachments.append((
-                        f"{applicant['name']} — Resume.{ext}",
-                        resume_data,
-                        mime_map.get(ext, 'application/octet-stream')
-                    ))
-
-            # Attach ICS calendar invite personalised to this interviewer
+            if resume_attachment:
+                attachments.append(resume_attachment)
             ics = _generate_ics(applicant['name'], position, interview_date,
                                 interview_time, interview_type,
                                 meeting_link, contact_person, iv_email)
             if ics:
                 attachments.append(('interview_invite.ics', ics.encode('utf-8'),
                                      'text/calendar'))
-
-            ok, err = _send_email(
+            pending_emails.append((
+                f'Interviewer {iv_name}',
                 iv_email,
                 f"Interview Scheduled — {applicant['name']} for {position} "
                 f"on {_fmt_date(interview_date)}",
-                html, attachments)
-            email_results.append(
-                f"Interviewer {iv_name} ({iv_email}): "
-                f"{'sent ✓' if ok else f'FAILED — {err}'}")
+                html, attachments
+            ))
+
+    def _send_pending_in_background(jobs, applicant_name):
+        for kind, to_addr, subject, html_body, atts in jobs:
+            try:
+                ok, err = _send_email(to_addr, subject, html_body, atts)
+                outcome_str = 'sent OK' if ok else f'FAILED — {err}'
+            except Exception as e:
+                outcome_str = f'CRASHED — {type(e).__name__}: {e}'
+            try:
+                log_action('INTERVIEW EMAIL', applicant_name,
+                           f'{kind} → {to_addr}: {outcome_str}')
+            except Exception:
+                print(f'[email] {kind} → {to_addr}: {outcome_str}')
+
+    if pending_emails:
+        threading.Thread(
+            target=_send_pending_in_background,
+            args=(pending_emails, applicant['name']),
+            daemon=True,
+        ).start()
 
     iv_names_str = ', '.join(iv[0] for iv in interviewers)
     log_action('INTERVIEW ADDED', applicant['name'],
                f'Interviewers: {iv_names_str} — {interview_type} — Outcome: {outcome}')
 
-    if email_results:
-        for msg in email_results:
-            flash(f'Email — {msg}', 'success' if '✓' in msg else 'warning')
     n = len(interviewers)
     flash(f'Interview scheduled with {n} interviewer{"s" if n != 1 else ""}.', 'success')
+    if pending_emails:
+        flash(f'Sending {len(pending_emails)} email notification(s) in the background — '
+              f'check the Audit Log for delivery status.', 'success')
     return redirect(url_for('view_resume', applicant_id=applicant_id))
 
 
