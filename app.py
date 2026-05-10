@@ -1705,13 +1705,19 @@ def _generate_ics(candidate_name, position, interview_date, interview_time,
 
 
 def _send_via_resend_http(api_key, from_addr, to_addr, subject, html_body,
-                            attachments=None):
+                            attachments=None, _retry_with_default=True):
     """
     Send an email via Resend's HTTP API — works from any cloud host even when
     outbound SMTP is blocked. Returns (ok, error_message).
 
     POST https://api.resend.com/emails
     Authorization: Bearer <RESEND_API_KEY>
+
+    If the configured MAIL_FROM uses an unverified domain (e.g. you set
+    @transcrypts.com but haven't yet added DNS records), we retry once with
+    Resend's universal default sender 'onboarding@resend.dev' so emails still
+    go out. The original from_addr will work the moment the domain is
+    verified — no code change needed at that point.
     """
     import urllib.request, urllib.error, json as _json, base64 as _b64
 
@@ -1772,6 +1778,20 @@ def _send_via_resend_http(api_key, from_addr, to_addr, subject, html_body,
             err_body = e.read().decode('utf-8', 'replace')
         except Exception:
             err_body = ''
+        # Auto-fallback: if MAIL_FROM uses an unverified domain, retry once
+        # with Resend's default 'onboarding@resend.dev' so the email still
+        # goes out. Once the user verifies their custom domain in Resend,
+        # the original FROM works automatically — no code change needed.
+        if (_retry_with_default and e.code == 403 and
+                ('not verified' in err_body.lower()
+                 or 'domain' in err_body.lower())):
+            fallback_from = 'TransCrypts HR <onboarding@resend.dev>'
+            print(f'[email] FROM "{from_addr}" rejected (domain not verified); '
+                  f'retrying with {fallback_from}')
+            return _send_via_resend_http(
+                api_key, fallback_from, to_addr, subject, html_body,
+                attachments, _retry_with_default=False
+            )
         return False, f'Resend HTTP {e.code}: {err_body[:300]}'
     except Exception as e:
         return False, f'Resend API error: {type(e).__name__}: {e}'
