@@ -1704,6 +1704,75 @@ def _generate_ics(candidate_name, position, interview_date, interview_time,
     )
 
 
+def _send_via_resend_http(api_key, from_addr, to_addr, subject, html_body,
+                            attachments=None):
+    """
+    Send an email via Resend's HTTP API — works from any cloud host even when
+    outbound SMTP is blocked. Returns (ok, error_message).
+
+    POST https://api.resend.com/emails
+    Authorization: Bearer <RESEND_API_KEY>
+    """
+    import urllib.request, urllib.error, json as _json, base64 as _b64
+
+    payload = {
+        'from':    from_addr,
+        'to':      [to_addr],
+        'subject': subject,
+        'html':    html_body,
+    }
+
+    if attachments:
+        att_list = []
+        for fname, fdata, fmime in attachments:
+            if isinstance(fdata, str):
+                fdata = fdata.encode('utf-8')
+            att_list.append({
+                'filename':    fname,
+                'content':     _b64.b64encode(fdata).decode(),
+                'content_type': fmime,
+            })
+        if att_list:
+            payload['attachments'] = att_list
+
+    # Inline the TransCrypts logo as a CID-style attachment if present
+    if _EMAIL_LOGO_BYTES:
+        payload.setdefault('attachments', []).append({
+            'filename':     'transcrypts_logo.png',
+            'content':      _b64.b64encode(_EMAIL_LOGO_BYTES).decode(),
+            'content_type': 'image/png',
+            'content_id':   'transcrypts_logo',
+        })
+
+    req = urllib.request.Request(
+        'https://api.resend.com/emails',
+        data=_json.dumps(payload).encode('utf-8'),
+        headers={
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type':  'application/json',
+        },
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            body = r.read().decode('utf-8', 'replace')
+            try:
+                data = _json.loads(body)
+            except Exception:
+                data = {}
+            if r.status in (200, 201, 202) and (data.get('id') or data.get('data')):
+                return True, ''
+            return False, f'Resend HTTP {r.status}: {body[:300]}'
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = e.read().decode('utf-8', 'replace')
+        except Exception:
+            err_body = ''
+        return False, f'Resend HTTP {e.code}: {err_body[:300]}'
+    except Exception as e:
+        return False, f'Resend API error: {type(e).__name__}: {e}'
+
+
 def _send_email(to_addr, subject, html_body, attachments=None):
     """
     Send an HTML email via SMTP (configured in config.py).
@@ -1731,10 +1800,23 @@ def _send_email(to_addr, subject, html_body, attachments=None):
     from email                import encoders
 
     creds = _email_credentials()
-    if not (creds['username'] and creds['password']):
+    if not (creds.get('username') and creds.get('password')):
         return False, ('Email not configured. Set MAIL_USERNAME, MAIL_PASSWORD, '
                        'MAIL_SERVER (e.g. smtp.gmail.com), MAIL_PORT (587), and '
                        'MAIL_FROM as environment variables on the host.')
+
+    # ── HTTP API short-circuit for cloud-friendly providers ──────────────────
+    # Many cloud hosts (Render, Vercel, Heroku free tier) BLOCK outbound SMTP
+    # ports for spam-prevention. HTTP works from anywhere. We auto-detect when
+    # the user has configured Resend (or RESEND_API_KEY directly) and use the
+    # HTTP API instead of SMTP.
+    server_l = (creds.get('server') or '').lower()
+    api_key  = (os.environ.get('RESEND_API_KEY') or '').strip() or (
+        creds.get('password') if 'resend' in server_l else ''
+    )
+    if api_key and ('resend' in server_l or os.environ.get('RESEND_API_KEY')):
+        return _send_via_resend_http(api_key, creds.get('from') or creds['username'],
+                                      to_addr, subject, html_body, attachments)
 
     msg = MIMEMultipart('mixed')
     msg['From']    = creds['from'] or creds['username']
