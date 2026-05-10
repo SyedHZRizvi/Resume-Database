@@ -3765,6 +3765,49 @@ def admin_email_dns_records():
             domains = _json.loads(r.read()).get('data', [])
     except urllib.error.HTTPError as e:
         body = e.read().decode('utf-8', 'replace')[:500]
+        # 401 with "restricted_api_key" means the Sending key can't list domains.
+        # Tell the user how to fix it (generate Full Access key) AND give them
+        # the manual fallback.
+        if e.code == 401 and 'restricted' in body.lower():
+            return f'''<!DOCTYPE html><html><head>
+<title>Resend API key needs Full Access</title>
+<style>body{{font-family:system-ui,sans-serif;max-width:780px;margin:30px auto;padding:0 20px;line-height:1.6}}
+code{{background:#f3f4f6;padding:2px 6px;border-radius:4px;font-size:14px}}
+.box{{padding:14px 18px;border-radius:8px;margin:14px 0}}
+.warn{{background:#fef3c7;border-left:4px solid #f59e0b}}
+.ok{{background:#d1fae5;border-left:4px solid #10b981}}
+</style></head><body>
+<h1>Resend API key needs upgrading</h1>
+<div class="warn">
+  <strong>Current API key has "Sending Access" only.</strong> It can send emails
+  (which is why interview emails work), but can't read/manage domains, so
+  this auto-fetch endpoint can't pull DNS records for you.
+</div>
+
+<h2>Easiest path (1 minute, no env var changes):</h2>
+<ol>
+  <li>Open <a href="https://resend.com/domains" target="_blank">resend.com/domains</a></li>
+  <li>Click on the <strong>transcrypts.com</strong> row in the list</li>
+  <li>The page that opens shows the 3 DNS records — copy them into Squarespace at
+      <a href="https://domains.squarespace.com/" target="_blank">domains.squarespace.com</a></li>
+</ol>
+
+<h2>Alternative — give me API access and I'll fetch + display them here:</h2>
+<ol>
+  <li>Open <a href="https://resend.com/api-keys" target="_blank">resend.com/api-keys</a></li>
+  <li>Click <strong>Create API Key</strong></li>
+  <li>Name: <code>transcrypts-admin</code> &nbsp; Permission: <strong>Full Access</strong></li>
+  <li>Copy the new key (starts with <code>re_</code>)</li>
+  <li>Render → Environment → add <code>RESEND_API_KEY</code> = the new key → Save</li>
+  <li>After redeploy (~3 min), refresh THIS page — DNS records will auto-display.</li>
+</ol>
+
+<div class="ok">
+  <strong>Either way</strong>: the email pipeline works for the account owner today
+  ({creds.get('username') or 'syed@transcrypts.com'}). DNS verification only
+  unlocks sending to other recipients.
+</div>
+</body></html>''', 401
         return f'<pre>Resend list domains failed: HTTP {e.code}\n{body}</pre>', 500
 
     domain_id = None
