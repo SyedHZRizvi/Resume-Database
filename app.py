@@ -1750,6 +1750,10 @@ def _send_via_resend_http(api_key, from_addr, to_addr, subject, html_body,
         headers={
             'Authorization': f'Bearer {api_key}',
             'Content-Type':  'application/json',
+            # A real-looking User-Agent — Cloudflare (which fronts Resend's API)
+            # blocks the default 'Python-urllib/3.x' UA with error 1010.
+            'User-Agent':    'TransCrypts-Resume-DB/1.0 (contact: hr@transcrypts.com)',
+            'Accept':        'application/json',
         },
         method='POST',
     )
