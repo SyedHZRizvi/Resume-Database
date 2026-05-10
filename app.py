@@ -3762,7 +3762,16 @@ def admin_email_dns_records():
         req = urllib.request.Request('https://api.resend.com/domains',
                                       headers=headers)
         with urllib.request.urlopen(req, timeout=15) as r:
-            domains = _json.loads(r.read()).get('data', [])
+            raw_body = r.read()
+            list_result = _json.loads(raw_body)
+        # Resend's response shape varies across versions — handle both
+        #   {"data": [...]}  AND  bare [...]
+        if isinstance(list_result, dict):
+            domains = list_result.get('data') or list_result.get('domains') or []
+        elif isinstance(list_result, list):
+            domains = list_result
+        else:
+            domains = []
     except urllib.error.HTTPError as e:
         body = e.read().decode('utf-8', 'replace')[:500]
         # 401 with "restricted_api_key" means the Sending key can't list domains.
@@ -3831,6 +3840,13 @@ code{{background:#f3f4f6;padding:2px 6px;border-radius:4px;font-size:14px}}
                 domain_status = 'pending'
         except urllib.error.HTTPError as e:
             body = e.read().decode('utf-8', 'replace')[:500]
+            # If the domain "has been registered already", we can't have parsed
+            # it from the list. Show the raw list response so we can debug.
+            if 'registered already' in body.lower():
+                return ('<h2>Domain already exists but couldn\'t be parsed from list</h2>'
+                        f'<p>Raw LIST response (paste the URL again to retry):</p>'
+                        f'<pre>{raw_body.decode("utf-8", "replace")[:2000]}</pre>'
+                        f'<p>POST error: {body}</p>'), 500
             return f'<pre>Could not auto-add domain (need Full Access API key): HTTP {e.code}\n{body}</pre>', 500
 
     # 3. Get full DNS records
