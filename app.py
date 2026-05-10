@@ -437,24 +437,22 @@ def log_action(action, target='', details=''):
     """Write one row to the audit_log table.
 
     Programming concept — Audit trail:
-    Every important action (add/edit/delete/login/logout) calls this function.
+    Every important action (add/edit/delete/login/logout/email) calls this.
     It records who did it, when, and what. Because it's a separate table that
-    only ever gets rows appended (never deleted), it is tamper-evident —
-    you always know what happened even if resume data is changed later.
+    only ever gets rows appended (never deleted), it is tamper-evident.
 
-    In local mode (REQUIRE_LOGIN=False) we skip logging since there are no
-    named users — everything is done by the single operator.
+    Logging happens ALWAYS, regardless of REQUIRE_LOGIN — when login is off
+    the username is recorded as 'system'. This way email-delivery outcomes
+    and admin actions are always visible on the Audit Log page.
     """
-    if not REQUIRE_LOGIN:
-        return
     try:
         with get_db() as conn:
             conn.execute(
                 'INSERT INTO audit_log (username, user_role, action, target, details) '
                 'VALUES (?, ?, ?, ?, ?)',
                 (
-                    session.get('username', 'system'),
-                    session.get('user_role', ''),
+                    session.get('username', 'system') if REQUIRE_LOGIN else 'system',
+                    session.get('user_role', '')      if REQUIRE_LOGIN else 'super_admin',
                     action,
                     target,
                     details,
@@ -1789,12 +1787,12 @@ def _send_email(to_addr, subject, html_body, attachments=None):
         #     120s worker timeout even when sending to N interviewers
         if int(creds['port']) == 465:
             smtp_class = smtplib.SMTP_SSL
-            with smtp_class(creds['server'], creds['port'], timeout=30) as s:
+            with smtp_class(creds['server'], creds['port'], timeout=12) as s:
                 s.ehlo()
                 s.login(creds['username'], creds['password'])
                 s.sendmail(creds['username'], to_addr, msg.as_bytes())
         else:
-            with smtplib.SMTP(creds['server'], creds['port'], timeout=30) as s:
+            with smtplib.SMTP(creds['server'], creds['port'], timeout=12) as s:
                 s.ehlo()
                 try:
                     s.starttls()
@@ -2490,52 +2488,57 @@ def add_interview(applicant_id):
         conn.commit()
 
     position = interview_position or (applicant['specialty'] or 'the open position').strip()
+    email_results = []
 
-    # ── Build all emails in-request, then SEND THEM IN A BACKGROUND THREAD ───
-    # The interview is already saved to Postgres above. Sending email is now
-    # fully fire-and-forget, so even a hanging SMTP server (e.g. Proton blocking
-    # cloud IPs and timing out after 30s × N recipients) cannot kill the
-    # gunicorn worker or 500 the user's browser. Failures are logged via
-    # log_action and visible in the audit page.
-    pending_emails = []   # list of (kind, to, subject, html, attachments)
-
+    # ── Email to candidate ────────────────────────────────────────────────────
     if send_candidate and applicant['email']:
         html = _candidate_email_html(
             applicant, interview_date, interview_time,
             interview_type, position, contact_person, meeting_link)
-        pending_emails.append((
-            'Candidate',
+        ok, err = _send_email(
             applicant['email'],
             f"Interview Invitation — {position} at {COMPANY_NAME}",
-            html, None
+            html)
+        email_results.append((
+            ok,
+            f"Candidate ({applicant['email']}): {'sent ✓' if ok else f'FAILED — {err}'}"
         ))
+        log_action('INTERVIEW EMAIL', applicant['name'],
+                   f'Candidate → {applicant["email"]}: '
+                   f'{"sent OK" if ok else f"FAILED — {err}"}')
+    elif send_candidate and not applicant['email']:
+        email_results.append((False,
+            'Candidate email not sent — no email address on record.'))
+
+    # ── Email to each interviewer ─────────────────────────────────────────────
+    # Read the resume bytes ONCE so all interviewer emails reuse them
+    resume_attachment = None
+    if send_interviewer and applicant['resume_filename']:
+        resume_data = _storage.read_file(applicant['resume_filename'])
+        if resume_data:
+            ext = applicant['resume_filename'].rsplit('.', 1)[-1].lower()
+            mime_map = {
+                'pdf':  'application/pdf',
+                'docx': 'application/vnd.openxmlformats-officedocument'
+                        '.wordprocessingml.document',
+                'doc':  'application/msword'
+            }
+            resume_attachment = (
+                f"{applicant['name']} — Resume.{ext}",
+                resume_data,
+                mime_map.get(ext, 'application/octet-stream')
+            )
 
     if send_interviewer:
-        # Read the resume bytes ONCE so all interviewer emails reuse them
-        resume_attachment = None
-        if applicant['resume_filename']:
-            resume_data = _storage.read_file(applicant['resume_filename'])
-            if resume_data:
-                ext = applicant['resume_filename'].rsplit('.', 1)[-1].lower()
-                mime_map = {
-                    'pdf':  'application/pdf',
-                    'docx': 'application/vnd.openxmlformats-officedocument'
-                            '.wordprocessingml.document',
-                    'doc':  'application/msword'
-                }
-                resume_attachment = (
-                    f"{applicant['name']} — Resume.{ext}",
-                    resume_data,
-                    mime_map.get(ext, 'application/octet-stream')
-                )
-
         for iv_name, iv_desig, iv_email in interviewers:
             if not iv_email:
+                email_results.append((False,
+                    f'Interviewer {iv_name}: no email address — notification skipped.'))
                 continue
+
             html = _interviewer_email_html(
                 applicant, position, interview_date, interview_time,
                 interview_type, iv_name, contact_person, meeting_link)
-
             attachments = []
             if resume_attachment:
                 attachments.append(resume_attachment)
@@ -2545,43 +2548,31 @@ def add_interview(applicant_id):
             if ics:
                 attachments.append(('interview_invite.ics', ics.encode('utf-8'),
                                      'text/calendar'))
-            pending_emails.append((
-                f'Interviewer {iv_name}',
+
+            ok, err = _send_email(
                 iv_email,
                 f"Interview Scheduled — {applicant['name']} for {position} "
                 f"on {_fmt_date(interview_date)}",
-                html, attachments
+                html, attachments)
+            email_results.append((
+                ok,
+                f"Interviewer {iv_name} ({iv_email}): "
+                f"{'sent ✓' if ok else f'FAILED — {err}'}"
             ))
-
-    def _send_pending_in_background(jobs, applicant_name):
-        for kind, to_addr, subject, html_body, atts in jobs:
-            try:
-                ok, err = _send_email(to_addr, subject, html_body, atts)
-                outcome_str = 'sent OK' if ok else f'FAILED — {err}'
-            except Exception as e:
-                outcome_str = f'CRASHED — {type(e).__name__}: {e}'
-            try:
-                log_action('INTERVIEW EMAIL', applicant_name,
-                           f'{kind} → {to_addr}: {outcome_str}')
-            except Exception:
-                print(f'[email] {kind} → {to_addr}: {outcome_str}')
-
-    if pending_emails:
-        threading.Thread(
-            target=_send_pending_in_background,
-            args=(pending_emails, applicant['name']),
-            daemon=True,
-        ).start()
+            log_action('INTERVIEW EMAIL', applicant['name'],
+                       f'Interviewer {iv_name} → {iv_email}: '
+                       f'{"sent OK" if ok else f"FAILED — {err}"}')
 
     iv_names_str = ', '.join(iv[0] for iv in interviewers)
     log_action('INTERVIEW ADDED', applicant['name'],
                f'Interviewers: {iv_names_str} — {interview_type} — Outcome: {outcome}')
 
+    # Show every email outcome as its own flash (success or warning)
+    for ok, msg in email_results:
+        flash(f'Email — {msg}', 'success' if ok else 'warning')
+
     n = len(interviewers)
     flash(f'Interview scheduled with {n} interviewer{"s" if n != 1 else ""}.', 'success')
-    if pending_emails:
-        flash(f'Sending {len(pending_emails)} email notification(s) in the background — '
-              f'check the Audit Log for delivery status.', 'success')
     return redirect(url_for('view_resume', applicant_id=applicant_id))
 
 
