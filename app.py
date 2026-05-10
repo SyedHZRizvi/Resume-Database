@@ -3755,7 +3755,9 @@ def admin_email_dns_records():
         'User-Agent':    'TransCrypts-Resume-DB/1.0',
         'Accept':        'application/json',
     }
-    domain_name = 'transcrypts.com'
+    # Prefer explicit RESEND_DOMAIN env var; else accept any transcrypts.com
+    # apex or subdomain found in the account.
+    preferred_name = (os.environ.get('RESEND_DOMAIN') or '').strip().lower()
 
     # 1. List existing domains
     try:
@@ -3821,14 +3823,29 @@ code{{background:#f3f4f6;padding:2px 6px;border-radius:4px;font-size:14px}}
 
     domain_id = None
     domain_status = 'unknown'
+    domain_name   = ''
+    # If RESEND_DOMAIN env var is set, pick that exact name; otherwise prefer
+    # any transcrypts.com-related domain (apex OR subdomain like mail.transcrypts.com).
+    transcrypts_matches = []
     for d in domains:
-        if (d.get('name') or '').lower() == domain_name:
-            domain_id = d.get('id')
+        nm = (d.get('name') or '').lower()
+        if preferred_name and nm == preferred_name:
+            domain_id     = d.get('id')
             domain_status = d.get('status', 'unknown')
+            domain_name   = nm
             break
+        if 'transcrypts.com' in nm:
+            transcrypts_matches.append(d)
+    # If no exact preferred match, take the first transcrypts.com-related domain
+    if not domain_id and transcrypts_matches:
+        d = transcrypts_matches[0]
+        domain_id     = d.get('id')
+        domain_status = d.get('status', 'unknown')
+        domain_name   = (d.get('name') or '').lower()
 
     # 2. Auto-add if missing
     if not domain_id:
+        domain_name = preferred_name or 'mail.transcrypts.com'
         try:
             req = urllib.request.Request(
                 'https://api.resend.com/domains',
