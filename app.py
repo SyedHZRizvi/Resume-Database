@@ -3731,6 +3731,147 @@ def api_status():
     return jsonify({'configured': configured})
 
 
+@app.route('/admin/email/dns-records')
+def admin_email_dns_records():
+    """
+    Fetch DNS records from Resend so the user knows EXACTLY what to add to
+    Squarespace. Uses the Resend API key already configured on the server,
+    so no extra credentials needed.
+
+    Auto-adds the domain if it doesn't exist yet, then lists the DNS records
+    Resend wants. Returns a single page with copy-paste-ready values.
+    """
+    import urllib.request, urllib.error, json as _json
+
+    creds   = _email_credentials()
+    api_key = (os.environ.get('RESEND_API_KEY') or '').strip() or creds.get('password', '')
+    if not api_key:
+        return ('<h2>No Resend API key configured</h2>'
+                '<p>Set MAIL_PASSWORD or RESEND_API_KEY env var on Render.</p>'), 400
+
+    headers = {
+        'Authorization': f'Bearer {api_key}',
+        'Content-Type':  'application/json',
+        'User-Agent':    'TransCrypts-Resume-DB/1.0',
+        'Accept':        'application/json',
+    }
+    domain_name = 'transcrypts.com'
+
+    # 1. List existing domains
+    try:
+        req = urllib.request.Request('https://api.resend.com/domains',
+                                      headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            domains = _json.loads(r.read()).get('data', [])
+    except urllib.error.HTTPError as e:
+        body = e.read().decode('utf-8', 'replace')[:500]
+        return f'<pre>Resend list domains failed: HTTP {e.code}\n{body}</pre>', 500
+
+    domain_id = None
+    domain_status = 'unknown'
+    for d in domains:
+        if (d.get('name') or '').lower() == domain_name:
+            domain_id = d.get('id')
+            domain_status = d.get('status', 'unknown')
+            break
+
+    # 2. Auto-add if missing
+    if not domain_id:
+        try:
+            req = urllib.request.Request(
+                'https://api.resend.com/domains',
+                data=_json.dumps({'name': domain_name, 'region': 'us-east-1'}).encode(),
+                headers=headers, method='POST')
+            with urllib.request.urlopen(req, timeout=15) as r:
+                created = _json.loads(r.read())
+                domain_id = created.get('id')
+                domain_status = 'pending'
+        except urllib.error.HTTPError as e:
+            body = e.read().decode('utf-8', 'replace')[:500]
+            return f'<pre>Could not auto-add domain (need Full Access API key): HTTP {e.code}\n{body}</pre>', 500
+
+    # 3. Get full DNS records
+    try:
+        req = urllib.request.Request(
+            f'https://api.resend.com/domains/{domain_id}',
+            headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            details = _json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode('utf-8', 'replace')[:500]
+        return f'<pre>Get domain details failed: HTTP {e.code}\n{body}</pre>', 500
+
+    records = details.get('records', [])
+    status  = details.get('status', domain_status)
+
+    # 4. Render a clean copy-friendly page
+    rows = []
+    for rec in records:
+        rec_type   = rec.get('type', '')
+        host       = rec.get('name', '').replace(f'.{domain_name}', '').replace(domain_name, '@')
+        value      = rec.get('value', '')
+        priority   = rec.get('priority', '')
+        ttl        = rec.get('ttl', 'auto')
+        rec_status = rec.get('status', '')
+        status_color = {'verified':'#16a34a', 'not_started':'#dc2626',
+                        'pending':'#d97706'}.get(rec_status.lower(), '#6b7280')
+        rows.append(f'''
+        <tr>
+          <td style="padding:10px;border:1px solid #ddd;font-weight:600">{rec_type}</td>
+          <td style="padding:10px;border:1px solid #ddd"><code style="font-size:13px">{host}</code></td>
+          <td style="padding:10px;border:1px solid #ddd"><code style="font-size:11px;word-break:break-all">{value}</code></td>
+          <td style="padding:10px;border:1px solid #ddd;text-align:center">{priority or '-'}</td>
+          <td style="padding:10px;border:1px solid #ddd;text-align:center">{ttl}</td>
+          <td style="padding:10px;border:1px solid #ddd;color:{status_color};font-weight:700">{rec_status}</td>
+        </tr>''')
+
+    overall_color = {'verified':'#16a34a', 'not_started':'#dc2626',
+                     'pending':'#d97706'}.get(status.lower(), '#6b7280')
+    rows_html = ''.join(rows) if rows else '<tr><td colspan="6" style="padding:20px;text-align:center">No records found</td></tr>'
+
+    return f'''<!DOCTYPE html>
+<html><head><title>Resend DNS Records — transcrypts.com</title>
+<style>body {{font-family: system-ui,sans-serif; max-width: 1100px; margin: 30px auto; padding: 0 20px}}</style>
+</head><body>
+<h1>Resend DNS Records for <code>transcrypts.com</code></h1>
+<p>Domain status:
+   <strong style="color:{overall_color};text-transform:uppercase">{status}</strong>
+</p>
+<p>Add these 3 records in Squarespace Domains:
+   <a href="https://domains.squarespace.com/" target="_blank">domains.squarespace.com</a></p>
+
+<table style="border-collapse:collapse;width:100%;margin-top:20px;font-size:14px">
+  <thead style="background:#f3f4f6">
+    <tr>
+      <th style="padding:10px;border:1px solid #ddd;text-align:left">Type</th>
+      <th style="padding:10px;border:1px solid #ddd;text-align:left">Host / Name</th>
+      <th style="padding:10px;border:1px solid #ddd;text-align:left">Value</th>
+      <th style="padding:10px;border:1px solid #ddd">Priority</th>
+      <th style="padding:10px;border:1px solid #ddd">TTL</th>
+      <th style="padding:10px;border:1px solid #ddd">Status</th>
+    </tr>
+  </thead>
+  <tbody>{rows_html}</tbody>
+</table>
+
+<h2 style="margin-top:40px">Squarespace DNS — step by step</h2>
+<ol style="line-height:1.8">
+  <li>Open <a href="https://domains.squarespace.com/" target="_blank">domains.squarespace.com</a> and sign in</li>
+  <li>Click <strong>transcrypts.com</strong></li>
+  <li>Left sidebar: <strong>DNS Settings</strong> (or <strong>Custom Records</strong>)</li>
+  <li>For EACH row above, click "Add Record" and copy the values from this page</li>
+  <li>Save</li>
+  <li>Wait 5 to 10 minutes</li>
+  <li>Refresh THIS page — when every record shows <span style="color:#16a34a;font-weight:700">verified</span>, you are done.</li>
+</ol>
+
+<p style="margin-top:30px;padding:12px 16px;background:#fef3c7;border-radius:8px;color:#78350f">
+  Once all rows show <strong>verified</strong>, candidate emails will start delivering.
+  No code change needed.
+</p>
+</body></html>'''
+
+
 @app.route('/admin/email/preview/<kind>')
 @role_required(*CAN_USERS)
 def admin_email_preview(kind):
