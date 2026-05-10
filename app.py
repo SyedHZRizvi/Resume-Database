@@ -86,8 +86,8 @@ MAIL_USERNAME        = _cfg('MAIL_USERNAME',         '')
 MAIL_PASSWORD        = _cfg('MAIL_PASSWORD',         '')
 MAIL_FROM            = _cfg('MAIL_FROM',             'TransCrypts HR <hr@transcrypts.com>')
 COMPANY_NAME         = _cfg('COMPANY_NAME',          'TransCrypts')
-OFFICE_ADDRESS       = _cfg('OFFICE_ADDRESS',        '1 Front Street, Toronto, ON M5J 2X5')
-OFFICE_FLOOR_ROOM    = _cfg('OFFICE_FLOOR_ROOM',     '')
+OFFICE_ADDRESS       = _cfg('OFFICE_ADDRESS',        '160 Front Street West, Toronto, ON M5J 2X5')
+OFFICE_FLOOR_ROOM    = _cfg('OFFICE_FLOOR_ROOM',     'Office 1820, 18th Floor')
 OFFICE_CONTACT_NAME  = _cfg('OFFICE_CONTACT_NAME',  'Reception')
 OFFICE_CONTACT_PHONE = _cfg('OFFICE_CONTACT_PHONE', '')
 # When Claude Code manages auth, the base URL is set and the key may be empty
@@ -2256,10 +2256,12 @@ def _interviewer_email_html(applicant, position, interview_date, interview_time,
     date_str = _fmt_date(interview_date)
     time_str = _fmt_time(interview_time) if interview_time else 'See invitation'
 
-    # Real location: office address for in-person, meeting link for virtual.
-    # contact_person is the reception greeter (NOT the location itself).
+    # Real location: office address (+ floor/room) for in-person, meeting link
+    # for virtual. contact_person is the reception greeter (NOT the location).
     if interview_type == 'In-Person':
         loc_str = OFFICE_ADDRESS
+        if OFFICE_FLOOR_ROOM:
+            loc_str = f"{OFFICE_ADDRESS}<br><span style='color:#1a5c3e;font-weight:600'>{OFFICE_FLOOR_ROOM}</span>"
     else:
         loc_str = meeting_link or interview_type
 
