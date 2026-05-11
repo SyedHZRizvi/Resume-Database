@@ -206,16 +206,10 @@ def _log_unhandled_exception(error):
     from werkzeug.exceptions import HTTPException
     if isinstance(error, HTTPException):
         return error
-    # TEMP debug: include the full traceback in the response so we can
-    # diagnose without needing direct Render log access.
-    tb_str = traceback.format_exc()
     return (f'<h1>500 Internal Server Error</h1>'
             f'<p>Reference: <code>{err_id}</code></p>'
             f'<p>Type: <code>{type(error).__name__}</code></p>'
-            f'<p>Message: <code>{str(error)[:300]}</code></p>'
-            f'<details open><summary>Traceback</summary>'
-            f'<pre style="background:#f4f4f4;padding:12px;font-size:11px;'
-            f'overflow:auto">{tb_str}</pre></details>'), 500
+            f'<p>Message: <code>{str(error)[:300]}</code></p>'), 500
 
 
 @app.context_processor

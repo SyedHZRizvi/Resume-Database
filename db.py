@@ -222,7 +222,13 @@ if USE_POSTGRES:
         q = _RE_INSERT_OR_IGNORE.sub('INSERT INTO ', q)
         q = _RE_INSERT_OR_REPLACE.sub('INSERT INTO ', q)
 
-        # ? placeholders → %s
+        # Escape literal % characters BEFORE adding %s placeholders.
+        # psycopg2 interprets every % in the query string as the start of a
+        # format specifier (even when no params are passed). A literal % in
+        # something like LIKE 'foo%' would cause IndexError: tuple index out of
+        # range. Doubling them to %% tells psycopg2 to emit a single literal %.
+        q = q.replace('%', '%%')
+        # ? placeholders → %s (these are fresh, won't get doubled)
         q = _RE_QMARK.sub('%s', q)
 
         # If this is a plain INSERT without a RETURNING clause, append one so
