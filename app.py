@@ -1829,18 +1829,19 @@ def _send_email(to_addr, subject, html_body, attachments=None):
                        'MAIL_SERVER (e.g. smtp.gmail.com), MAIL_PORT (587), and '
                        'MAIL_FROM as environment variables on the host.')
 
-    # ── HTTP API short-circuit for cloud-friendly providers ──────────────────
-    # Many cloud hosts (Render, Vercel, Heroku free tier) BLOCK outbound SMTP
-    # ports for spam-prevention. HTTP works from anywhere. We auto-detect when
-    # the user has configured Resend (or RESEND_API_KEY directly) and use the
-    # HTTP API instead of SMTP.
+    # ── HTTP API short-circuit for Resend (only when MAIL_SERVER says so) ────
+    # When MAIL_SERVER explicitly points at Resend's host, send via Resend's
+    # HTTP API instead of SMTP (Render free tier blocks outbound SMTP).
+    # If MAIL_SERVER is anything else (e.g. smtp.protonmail.ch on a paid
+    # Render instance, smtp.gmail.com, smtp.office365.com…), we fall through
+    # to the standard SMTP path so the user's choice of provider is honoured.
     server_l = (creds.get('server') or '').lower()
-    api_key  = (os.environ.get('RESEND_API_KEY') or '').strip() or (
-        creds.get('password') if 'resend' in server_l else ''
-    )
-    if api_key and ('resend' in server_l or os.environ.get('RESEND_API_KEY')):
-        return _send_via_resend_http(api_key, creds.get('from') or creds['username'],
-                                      to_addr, subject, html_body, attachments)
+    if 'resend' in server_l and creds.get('password'):
+        return _send_via_resend_http(
+            creds['password'],
+            creds.get('from') or creds['username'],
+            to_addr, subject, html_body, attachments
+        )
 
     msg = MIMEMultipart('mixed')
     msg['From']    = creds['from'] or creds['username']
