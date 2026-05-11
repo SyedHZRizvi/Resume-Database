@@ -970,6 +970,7 @@ def index():
     f_linkedin  = request.args.get('linkedin', '').strip()   # 'yes' / 'no' / ''
     f_github    = request.args.get('github', '').strip()     # 'yes' / 'no' / ''
     f_status    = request.args.get('status', '').strip()     # hiring status filter
+    f_source    = request.args.get('source', '').strip()     # 'career' / 'manual' / ''
 
     # ── Build SQL WHERE clause (all filters are AND) ───────────────────────
     conditions, params = [], []
@@ -1032,6 +1033,12 @@ def index():
         conditions.append('hiring_status = ?')
         params.append(f_status)
 
+    # Source filter: 'career' = applied through the website, 'manual' = HR added
+    if f_source == 'career':
+        conditions.append("source LIKE 'Career Website%'")
+    elif f_source == 'manual':
+        conditions.append("(source IS NULL OR source = 'Manual Entry' OR source NOT LIKE 'Career Website%')")
+
     with get_db() as conn:
         total = conn.execute('SELECT COUNT(*) FROM applicants').fetchone()[0]
 
@@ -1042,24 +1049,36 @@ def index():
             ).fetchall()
         ]
 
+        # Order:
+        #   1. Career-website applicants first (so HR sees fresh applications at the top)
+        #   2. Newest career applications first (by date_added DESC)
+        #   3. Then everyone else, alphabetical by name
+        order_clause = (
+            " ORDER BY "
+            "  CASE WHEN source LIKE 'Career Website%' THEN 0 ELSE 1 END, "
+            "  date_added DESC, "
+            "  name COLLATE NOCASE ASC"
+        )
         if conditions:
-            sql = ('SELECT * FROM applicants WHERE '
-                   + ' AND '.join(conditions)
-                   + ' ORDER BY name COLLATE NOCASE ASC')
+            sql = 'SELECT * FROM applicants WHERE ' + ' AND '.join(conditions) + order_clause
             applicants = conn.execute(sql, params).fetchall()
         else:
-            applicants = conn.execute(
-                'SELECT * FROM applicants ORDER BY name COLLATE NOCASE ASC'
-            ).fetchall()
+            applicants = conn.execute('SELECT * FROM applicants' + order_clause).fetchall()
+
+        # Count of career-website applicants (for header badge)
+        career_count = conn.execute(
+            "SELECT COUNT(*) FROM applicants WHERE source LIKE 'Career Website%'"
+        ).fetchone()[0]
 
     any_filter = bool(q or f_specialty or f_skills or f_education
                       or f_exp_min or f_exp_max or f_has_file
-                      or f_linkedin or f_github or f_status)
+                      or f_linkedin or f_github or f_status or f_source)
 
     return render_template(
         'index.html',
         applicants=applicants,
         total=total,
+        career_count=career_count,
         specialties=specialties,
         q=q,
         f_specialty=f_specialty,
@@ -1071,6 +1090,7 @@ def index():
         f_linkedin=f_linkedin,
         f_github=f_github,
         f_status=f_status,
+        f_source=f_source,
         any_filter=any_filter,
     )
 
