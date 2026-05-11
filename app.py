@@ -3685,17 +3685,62 @@ def api_careers_apply():
 
     # ── Insert into DB ───────────────────────────────────────────────────────
     with get_db() as conn:
-        # De-dupe: if the same file_hash already exists, return that record
-        existing = conn.execute(
-            'SELECT id FROM applicants WHERE file_hash=?', (file_hash,)
+        # ── De-dupe — check EMAIL first, then file-hash ──────────────────────
+        # Email is the most reliable identifier of a real person. Files often
+        # differ at the byte level (re-export, browser modifications, version
+        # changes) so file_hash alone misses re-applications. We check both:
+        #   1. EMAIL match → same person, even with a different file: tell
+        #      them their application is already on file. We also update the
+        #      existing record's applied_position so HR can see they're
+        #      interested in this new role too.
+        #   2. FILE-HASH match (no email match) → byte-identical resume from
+        #      a different email. Could be the same person using a different
+        #      address, OR a fraud attempt. Still treat as duplicate.
+        existing_by_email = conn.execute(
+            'SELECT id, applied_position FROM applicants '
+            'WHERE LOWER(email) = LOWER(?)', (email,)
         ).fetchone()
-        if existing:
+        if existing_by_email:
+            # Track the new position they applied for
+            old_pos = existing_by_email['applied_position'] or ''
+            new_positions = old_pos
+            if position and position not in old_pos:
+                new_positions = (old_pos + ' | ' + position).strip(' |') if old_pos else position
+            try:
+                conn.execute(
+                    "UPDATE applicants SET applied_position = ?, "
+                    "source = ? WHERE id = ?",
+                    (new_positions, source_label, existing_by_email['id'])
+                )
+                conn.commit()
+            except Exception:
+                pass
+            log_action('CAREER APPLICATION (DUP)', name,
+                       f'Already on file as id={existing_by_email["id"]}. '
+                       f'Added position: {position or "Open"} | IP: {client_ip}')
             return jsonify({
                 'ok': True,
-                'applicant_id': existing['id'],
+                'applicant_id': existing_by_email['id'],
                 'duplicate': True,
-                'message': ("We already have your resume on file — we'll review "
-                            "it for this position. Thank you!"),
+                'message': (
+                    "We already have your application on file — thank you! "
+                    f"We've noted your interest in {position or 'this opportunity'} "
+                    "and our team will be in touch."
+                ),
+            })
+
+        existing_by_hash = conn.execute(
+            'SELECT id FROM applicants WHERE file_hash=?', (file_hash,)
+        ).fetchone()
+        if existing_by_hash:
+            log_action('CAREER APPLICATION (DUP)', name,
+                       f'Same resume as id={existing_by_hash["id"]}. IP: {client_ip}')
+            return jsonify({
+                'ok': True,
+                'applicant_id': existing_by_hash['id'],
+                'duplicate': True,
+                'message': ("We already have this resume on file — we'll "
+                            "review it for this position. Thank you!"),
             })
 
         cur = conn.execute(
