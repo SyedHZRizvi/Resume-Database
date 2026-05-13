@@ -381,6 +381,12 @@ def init_db():
             ('decision_date',     'TEXT'),
             ('decision_notes',    'TEXT'),
             ('file_hash',         'TEXT'),
+            # text_hash = MD5 of the normalized resume TEXT (lowercase, collapsed
+            # whitespace). Lets us spot duplicates even when the bytes differ —
+            # e.g. same resume re-exported with different metadata, or saved
+            # from a different tool. file_hash catches byte-identical files;
+            # text_hash catches content-identical ones.
+            ('text_hash',         'TEXT'),
             # ── Career-website integration ────────────────────────────────────
             ('source',            "TEXT DEFAULT 'Manual Entry'"),
             ('applied_position',  'TEXT'),
@@ -593,6 +599,52 @@ def compute_file_hash(file_obj):
         sha256.update(chunk)
     file_obj.seek(0)
     return sha256.hexdigest()
+
+
+def _normalize_resume_text(text):
+    """Lowercase, strip, collapse whitespace, drop non-alphanumeric noise so
+    that two resumes with identical content but different formatting / page
+    breaks / soft hyphens still produce the same hash. This is intentionally
+    aggressive — false negatives (missed dupes) are worse than false positives
+    (manually reviewed dupes).
+    """
+    if not text:
+        return ''
+    import re
+    s = text.lower()
+    # Drop everything that isn't a letter, digit, @ (preserve emails), or space.
+    s = re.sub(r'[^a-z0-9@ ]+', ' ', s)
+    # Collapse all whitespace into single spaces.
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
+
+def compute_text_hash(raw_bytes, filename):
+    """Return MD5 of the normalized text extracted from a resume file.
+
+    Returns an empty string when extraction fails (scanned image with no OCR,
+    corrupt PDF, etc.) — callers should treat empty as "skip text-hash dedup
+    for this file" rather than as a real hash.
+    """
+    if not raw_bytes:
+        return ''
+    try:
+        text = _extract_text_from_file(raw_bytes, (filename or '').lower())
+    except Exception:
+        return ''
+    norm = _normalize_resume_text(text)
+    if not norm or len(norm) < 50:
+        # Too little extractable text to be a reliable identity signal.
+        return ''
+    return hashlib.md5(norm.encode('utf-8')).hexdigest()
+
+
+def _read_file_bytes_from_field(file_obj):
+    """Read the bytes from a Werkzeug FileStorage without losing position."""
+    file_obj.seek(0)
+    data = file_obj.read()
+    file_obj.seek(0)
+    return data
 
 
 # ─── Auth routes ──────────────────────────────────────────────────────────────
@@ -1126,8 +1178,11 @@ def add_resume():
                 flash('Please provide a valid resume file to replace the existing one.', 'error')
                 return render_template('add_resume.html', form=request.form)
 
-            # Compute hash — check it is not already on a DIFFERENT record
+            # Compute hashes — block if either the bytes OR the text content
+            # already belongs to a DIFFERENT record.
             new_hash = compute_file_hash(file)
+            _file_bytes = _read_file_bytes_from_field(file)
+            new_text_hash = compute_text_hash(_file_bytes, file.filename or '')
             with get_db() as conn:
                 hash_dup = conn.execute(
                     'SELECT id, name FROM applicants WHERE file_hash=? AND id!=?',
@@ -1142,13 +1197,30 @@ def add_resume():
                 )
                 return render_template('add_resume.html', form=request.form)
 
+            if new_text_hash:
+                with get_db() as conn:
+                    text_dup = conn.execute(
+                        'SELECT id, name FROM applicants '
+                        'WHERE text_hash=? AND id!=?',
+                        (new_text_hash, update_id)
+                    ).fetchone()
+                if text_dup:
+                    flash(
+                        f'The uploaded file has the SAME CONTENT as the resume '
+                        f'already on record for "{text_dup["name"]}" '
+                        f'(ID #{text_dup["id"]}). Even though the file is '
+                        f'different on disk, the resume text is identical. '
+                        f'No changes were made.',
+                        'error'
+                    )
+                    return render_template('add_resume.html', form=request.form)
+
             # Delete old file
             if existing['resume_filename']:
                 _storage.delete_file(existing['resume_filename'])
 
             # Save new file via storage abstraction (Supabase or local)
             new_filename = make_unique_filename(file.filename)
-            _file_bytes = file.read()
             _storage.save_file(new_filename, _file_bytes,
                                file.mimetype or 'application/octet-stream')
 
@@ -1163,13 +1235,13 @@ def add_resume():
             with get_db() as conn:
                 conn.execute('''
                     UPDATE applicants
-                       SET resume_filename=?, file_hash=?,
+                       SET resume_filename=?, file_hash=?, text_hash=?,
                            name=?, email=?, phone=?,
                            specialty=?, years_experience=?,
                            highest_education=?, skills=?
                      WHERE id=?
                 ''', (
-                    new_filename, new_hash,
+                    new_filename, new_hash, new_text_hash,
                     _pick(parsed.get('name'),              existing['name']),
                     _pick(parsed.get('email'),             existing['email']),
                     _pick(parsed.get('phone'),             existing['phone']),
@@ -1251,11 +1323,14 @@ def add_resume():
         # Handle file upload
         resume_filename = None
         file_hash       = None
+        text_hash       = None
         file = request.files.get('resume_file')
         if file and file.filename:
             if allowed_file(file.filename):
                 # ── Server-side hash duplicate check (always blocks — no override) ─
                 file_hash = compute_file_hash(file)
+                _file_bytes = _read_file_bytes_from_field(file)
+                text_hash = compute_text_hash(_file_bytes, file.filename)
                 with get_db() as _conn:
                     existing = _conn.execute(
                         'SELECT id, name FROM applicants WHERE file_hash = ?',
@@ -1270,8 +1345,25 @@ def add_resume():
                     )
                     return render_template('add_resume.html', form=request.form)
 
+                if text_hash:
+                    with get_db() as _conn:
+                        text_existing = _conn.execute(
+                            'SELECT id, name FROM applicants WHERE text_hash = ?',
+                            (text_hash,)
+                        ).fetchone()
+                    if text_existing:
+                        flash(
+                            f'This resume has the SAME CONTENT as the one already on '
+                            f'record for "{text_existing["name"]}" '
+                            f'(ID #{text_existing["id"]}). Even though the file is '
+                            f'different on disk, the resume text is identical. '
+                            f'Upload blocked.',
+                            'error'
+                        )
+                        return render_template('add_resume.html', form=request.form)
+
                 resume_filename = make_unique_filename(file.filename)
-                _storage.save_file(resume_filename, file.read(),
+                _storage.save_file(resume_filename, _file_bytes,
                                    file.mimetype or 'application/octet-stream')
             else:
                 flash('Only PDF, DOC, and DOCX files are allowed.', 'error')
@@ -1282,11 +1374,11 @@ def add_resume():
                 INSERT INTO applicants
                     (name, email, phone, linkedin_url, github_url,
                      specialty, years_experience, highest_education,
-                     skills, resume_filename, notes, file_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     skills, resume_filename, notes, file_hash, text_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (name, email, phone, linkedin_url, github_url,
                   specialty, years_experience, highest_education,
-                  skills, resume_filename, notes, file_hash))
+                  skills, resume_filename, notes, file_hash, text_hash))
             conn.commit()
 
         flash(f'✓ Resume for {name} has been added successfully!', 'success')
@@ -1315,14 +1407,16 @@ def add_bulk():
                                'reason': 'Unsupported file type'})
                 continue
 
-            # ── Compute hash in memory BEFORE saving ────────────────────────
+            # ── Compute hashes in memory BEFORE saving ──────────────────────
             try:
                 fhash = compute_file_hash(file)
+                _file_bytes = _read_file_bytes_from_field(file)
+                thash = compute_text_hash(_file_bytes, file.filename)
             except Exception as e:
                 failed.append({'filename': file.filename, 'reason': f'Could not hash file: {e}'})
                 continue
 
-            # ── Block if exact duplicate already exists ───────────────────────
+            # ── Block if exact-byte duplicate already exists ────────────────
             with get_db() as _conn:
                 dup = _conn.execute(
                     'SELECT id, name FROM applicants WHERE file_hash = ?', (fhash,)
@@ -1334,11 +1428,26 @@ def add_bulk():
                 })
                 continue
 
+            # ── Block if content-duplicate already exists ───────────────────
+            if thash:
+                with get_db() as _conn:
+                    tdup = _conn.execute(
+                        'SELECT id, name FROM applicants WHERE text_hash = ?',
+                        (thash,)
+                    ).fetchone()
+                if tdup:
+                    failed.append({
+                        'filename': file.filename,
+                        'reason': (f'Duplicate content — resume text matches '
+                                   f'existing record for "{tdup["name"]}" '
+                                   f'(ID #{tdup["id"]})')
+                    })
+                    continue
+
             # Save the file via storage abstraction (works with Supabase or local)
             filename = make_unique_filename(file.filename)
             try:
-                file.seek(0)
-                _storage.save_file(filename, file.read(),
+                _storage.save_file(filename, _file_bytes,
                                    file.mimetype or 'application/octet-stream')
             except Exception as e:
                 failed.append({'filename': file.filename, 'reason': f'Could not save: {e}'})
@@ -1374,8 +1483,9 @@ def add_bulk():
                         INSERT INTO applicants
                             (name, email, phone, linkedin_url, github_url,
                              specialty, years_experience,
-                             highest_education, skills, resume_filename, file_hash)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             highest_education, skills, resume_filename,
+                             file_hash, text_hash)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (name,
                           (parsed.get('email') or '').strip(),
                           (parsed.get('phone') or '').strip(),
@@ -1386,7 +1496,7 @@ def add_bulk():
                           (parsed.get('highest_education') or '').strip(),
                           (parsed.get('skills') or '').strip(),
                           filename,
-                          fhash))
+                          fhash, thash))
                     conn.commit()
                 added.append({'name': name, 'filename': file.filename})
                 log_action('RESUME ADDED', name, f'Bulk upload — {file.filename}')
@@ -1476,11 +1586,18 @@ def edit_resume(applicant_id):
         # Handle new file upload
         resume_filename = applicant['resume_filename']
         new_file_hash   = applicant['file_hash']   # keep existing hash unless replaced
+        # text_hash may not exist on very old rows — fall back to None safely.
+        try:
+            new_text_hash = applicant['text_hash']
+        except (KeyError, IndexError):
+            new_text_hash = None
         file = request.files.get('resume_file')
         if file and file.filename:
             if allowed_file(file.filename):
                 # ── Hash check: block if replacing with an exact duplicate ───
                 new_file_hash = compute_file_hash(file)
+                _file_bytes = _read_file_bytes_from_field(file)
+                new_text_hash = compute_text_hash(_file_bytes, file.filename)
                 with get_db() as _conn:
                     existing = _conn.execute(
                         'SELECT id, name FROM applicants WHERE file_hash = ? AND id != ?',
@@ -1495,12 +1612,27 @@ def edit_resume(applicant_id):
                     )
                     return render_template('edit_resume.html', applicant=applicant)
 
+                if new_text_hash:
+                    with get_db() as _conn:
+                        text_existing = _conn.execute(
+                            'SELECT id, name FROM applicants '
+                            'WHERE text_hash = ? AND id != ?',
+                            (new_text_hash, applicant_id)
+                        ).fetchone()
+                    if text_existing:
+                        flash(
+                            f'The uploaded file has the SAME CONTENT as the resume '
+                            f'already on record for "{text_existing["name"]}" '
+                            f'(ID #{text_existing["id"]}). File not replaced.',
+                            'error'
+                        )
+                        return render_template('edit_resume.html', applicant=applicant)
+
                 # Delete old file first
                 if resume_filename:
                     _storage.delete_file(resume_filename)
                 resume_filename = make_unique_filename(file.filename)
-                file.seek(0)
-                _storage.save_file(resume_filename, file.read(),
+                _storage.save_file(resume_filename, _file_bytes,
                                    file.mimetype or 'application/octet-stream')
             else:
                 flash('Only PDF, DOC, and DOCX files are allowed.', 'error')
@@ -1512,17 +1644,20 @@ def edit_resume(applicant_id):
                 _storage.delete_file(resume_filename)
             resume_filename  = None
             new_file_hash    = None
+            new_text_hash    = None
 
         with get_db() as conn:
             conn.execute('''
                 UPDATE applicants
                 SET name=?, email=?, phone=?, linkedin_url=?, github_url=?,
                     specialty=?, years_experience=?, highest_education=?,
-                    skills=?, resume_filename=?, notes=?, file_hash=?
+                    skills=?, resume_filename=?, notes=?,
+                    file_hash=?, text_hash=?
                 WHERE id=?
             ''', (name, email, phone, linkedin_url, github_url,
                   specialty, years_experience, highest_education,
-                  skills, resume_filename, notes, new_file_hash, applicant_id))
+                  skills, resume_filename, notes,
+                  new_file_hash, new_text_hash, applicant_id))
             conn.commit()
 
         edit_notes = request.form.get('edit_notes', '').strip()
@@ -3660,6 +3795,7 @@ def api_careers_apply():
     raw = file.read()
     file.seek(0)
     file_hash = hashlib.md5(raw).hexdigest()
+    text_hash = compute_text_hash(raw, file.filename or '')
     safe_name = secure_filename(file.filename)
     base, ext = os.path.splitext(safe_name)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -3771,6 +3907,27 @@ def api_careers_apply():
                             "review it for this position. Thank you!"),
             })
 
+        # Text-content match — catches "same resume re-exported" / different
+        # bytes but identical content. text_hash is empty when text extraction
+        # failed (scanned PDF without OCR), so we skip the check in that case.
+        if text_hash:
+            existing_by_text = conn.execute(
+                'SELECT id, name FROM applicants WHERE text_hash=?',
+                (text_hash,)
+            ).fetchone()
+            if existing_by_text:
+                log_action('CAREER APPLICATION (DUP)', name,
+                           f'Same resume CONTENT as id={existing_by_text["id"]} '
+                           f'({existing_by_text["name"]}). IP: {client_ip}'
+                           + (f' | {" ".join(discrepancy_notes)}' if discrepancy_notes else ''))
+                return jsonify({
+                    'ok': True,
+                    'applicant_id': existing_by_text['id'],
+                    'duplicate': True,
+                    'message': ("We already have this resume on file — we'll "
+                                "review it for this position. Thank you!"),
+                })
+
         # Name + phone match — catches the same person re-applying with a
         # different email but the same resume content.
         if name and phone:
@@ -3804,9 +3961,9 @@ def api_careers_apply():
             '''INSERT INTO applicants
                (name, email, phone, specialty, years_experience, highest_education,
                 skills, resume_filename, notes, date_added, hiring_status,
-                linkedin_url, github_url, file_hash, source, applied_position,
-                cover_letter)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                linkedin_url, github_url, file_hash, text_hash, source,
+                applied_position, cover_letter)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (
                 name, email, phone,
                 parsed.get('specialty', position or ''),
@@ -3820,6 +3977,7 @@ def api_careers_apply():
                 linkedin_url or parsed.get('linkedin_url', ''),
                 github_url   or parsed.get('github_url',   ''),
                 file_hash,
+                text_hash,
                 source_label,
                 position_label,
                 cover_letter,
@@ -3845,6 +4003,125 @@ def api_careers_health():
     """Lightweight health check the website can call to verify the API is up."""
     return jsonify({'ok': True, 'service': 'TransCrypts Resume DB',
                     'careers_api': 'online'})
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Admin: content-duplicate cleanup
+# ──────────────────────────────────────────────────────────────────────────────
+#  text_hash was added later, so existing rows have NULL there. This endpoint
+#  re-reads each stored resume file, extracts text, computes the hash, and
+#  fills the column. After backfill it identifies groups of records that
+#  share the same text_hash and offers to delete the newer ones (keeping the
+#  oldest record in each group, which has the most history attached to it).
+#
+#  Two-step UX so no data is lost by accident:
+#    GET  /admin/cleanup-content-duplicates              → preview only
+#    POST /admin/cleanup-content-duplicates?execute=1    → actually delete
+# ──────────────────────────────────────────────────────────────────────────────
+@app.route('/admin/cleanup-content-duplicates', methods=['GET', 'POST'])
+@role_required(*CAN_USERS)
+def admin_cleanup_content_duplicates():
+    execute = (request.args.get('execute') or '').strip() == '1' \
+              and request.method == 'POST'
+
+    # ── 1. Backfill missing text_hash values ────────────────────────────────
+    backfilled = 0
+    skipped    = 0
+    with get_db() as conn:
+        rows = conn.execute(
+            'SELECT id, resume_filename FROM applicants '
+            "WHERE (text_hash IS NULL OR text_hash = '') "
+            "  AND resume_filename IS NOT NULL "
+            "  AND resume_filename != ''"
+        ).fetchall()
+
+    for r in rows:
+        try:
+            data = _storage.read_file(r['resume_filename'])
+            if not data:
+                skipped += 1
+                continue
+            th = compute_text_hash(data, r['resume_filename'])
+            if not th:
+                skipped += 1
+                continue
+            with get_db() as conn:
+                conn.execute('UPDATE applicants SET text_hash=? WHERE id=?',
+                             (th, r['id']))
+                conn.commit()
+            backfilled += 1
+        except Exception:
+            skipped += 1
+
+    # ── 2. Find duplicate groups ────────────────────────────────────────────
+    with get_db() as conn:
+        groups_rows = conn.execute(
+            "SELECT text_hash, COUNT(*) AS n FROM applicants "
+            "WHERE text_hash IS NOT NULL AND text_hash != '' "
+            "GROUP BY text_hash HAVING COUNT(*) > 1"
+        ).fetchall()
+
+    duplicate_groups = []
+    ids_to_delete    = []
+    for g in groups_rows:
+        with get_db() as conn:
+            members = conn.execute(
+                'SELECT id, name, email, date_added, resume_filename, source '
+                'FROM applicants WHERE text_hash=? '
+                'ORDER BY date_added ASC, id ASC',
+                (g['text_hash'],)
+            ).fetchall()
+        if len(members) < 2:
+            continue
+        keep    = members[0]
+        remove  = members[1:]
+        duplicate_groups.append({
+            'text_hash': g['text_hash'],
+            'keep':      dict(keep) if not isinstance(keep, dict) else keep,
+            'remove':    [dict(m) if not isinstance(m, dict) else m for m in remove],
+        })
+        ids_to_delete.extend([m['id'] for m in remove])
+
+    # ── 3. Execute deletions (only on POST + ?execute=1) ────────────────────
+    deleted = []
+    if execute and ids_to_delete:
+        with get_db() as conn:
+            for did in ids_to_delete:
+                row = conn.execute(
+                    'SELECT name, resume_filename FROM applicants WHERE id=?',
+                    (did,)
+                ).fetchone()
+                if not row:
+                    continue
+                # Best-effort file delete; ignore errors so DB stays consistent.
+                try:
+                    if row['resume_filename']:
+                        _storage.delete_file(row['resume_filename'])
+                except Exception:
+                    pass
+                conn.execute('DELETE FROM applicants WHERE id=?', (did,))
+                conn.commit()
+                deleted.append({'id': did, 'name': row['name']})
+                log_action('DUPLICATE REMOVED', row['name'] or f'id={did}',
+                           f'Removed via content-duplicate cleanup (id={did})')
+
+    return jsonify({
+        'ok':          True,
+        'mode':        'executed' if execute else 'preview',
+        'backfilled':  backfilled,
+        'skipped':     skipped,
+        'duplicate_groups': duplicate_groups,
+        'will_delete_ids':  ids_to_delete if not execute else [],
+        'deleted':     deleted,
+        'instructions': (
+            'POST to /admin/cleanup-content-duplicates?execute=1 to delete '
+            'the newer records in each duplicate group (the oldest record is '
+            'always kept).'
+        ) if not execute else (
+            f'Deleted {len(deleted)} duplicate record(s). The original record '
+            f'in each group was preserved.'
+        ),
+    })
 
 
 @app.route('/api-status', methods=['GET'])
