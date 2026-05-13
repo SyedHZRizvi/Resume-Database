@@ -3636,13 +3636,7 @@ def api_careers_apply():
         return jsonify({'ok': False,
                         'message': 'Too many submissions. Please try again later.'}), 429
 
-    # ── Validate required fields ─────────────────────────────────────────────
-    name  = (request.form.get('name')  or '').strip()
-    email = (request.form.get('email') or '').strip()
-    if not name or not email:
-        return jsonify({'ok': False,
-                        'message': 'Name and email are required.'}), 400
-
+    # ── Resume file is the one truly required input ──────────────────────────
     file = request.files.get('resume')
     if not file or not file.filename:
         return jsonify({'ok': False,
@@ -3652,8 +3646,11 @@ def api_careers_apply():
         return jsonify({'ok': False,
                         'message': 'Resume must be a PDF or DOCX file.'}), 400
 
-    # Optional fields
-    phone        = (request.form.get('phone')        or '').strip()
+    # Form fields are now treated as candidate-supplied HINTS. The resume
+    # itself is the authoritative source of identity (name/email/phone).
+    form_name    = (request.form.get('name')         or '').strip()
+    form_email   = (request.form.get('email')        or '').strip()
+    form_phone   = (request.form.get('phone')        or '').strip()
     position     = (request.form.get('position')     or '').strip()
     cover_letter = (request.form.get('cover_letter') or '').strip()
     linkedin_url = (request.form.get('linkedin_url') or '').strip()
@@ -3670,7 +3667,7 @@ def api_careers_apply():
     _storage.save_file(final_name, raw,
                        file.mimetype or 'application/octet-stream')
 
-    # ── Try to parse the resume in the background to enrich the record ──────
+    # ── Parse resume FIRST — its content drives identity & dedup ────────────
     parsed = {}
     try:
         text = _extract_text_from_file(raw, final_name.lower())
@@ -3679,23 +3676,52 @@ def api_careers_apply():
     except Exception:
         parsed = {}
 
+    parsed_name  = (parsed.get('name')  or '').strip()
+    parsed_email = (parsed.get('email') or '').strip()
+    parsed_phone = (parsed.get('phone') or '').strip()
+
+    # Effective identity: prefer what's in the resume, fall back to form input.
+    name  = parsed_name  or form_name
+    email = parsed_email or form_email
+    phone = parsed_phone or form_phone
+
+    # If we have neither a parsed name/email NOR form name/email, we can't
+    # create a usable record. Ask the candidate to provide readable contact info.
+    if not name or not email:
+        return jsonify({
+            'ok': False,
+            'message': ('We could not read the contact information from your '
+                        'resume. Please make sure your name and email appear '
+                        'as selectable text (not just inside an image) and '
+                        'try again.'),
+        }), 400
+
+    # Flag mismatches between what the candidate typed and what's in the resume.
+    # HR sees this so they can investigate possible fraud or wrong-file uploads.
+    discrepancy_notes = []
+    if form_name  and parsed_name  and form_name.lower()  != parsed_name.lower():
+        discrepancy_notes.append(
+            f'Submitted as "{form_name}" but resume parses as "{parsed_name}".')
+    if form_email and parsed_email and form_email.lower() != parsed_email.lower():
+        discrepancy_notes.append(
+            f'Form email "{form_email}" differs from resume email "{parsed_email}".')
+
     # Position → display label
     position_label   = position or 'Open Application — Suitable Position'
     source_label     = 'Career Website' + (f' — {position}' if position else ' — Open Application')
 
     # ── Insert into DB ───────────────────────────────────────────────────────
     with get_db() as conn:
-        # ── De-dupe — check EMAIL first, then file-hash ──────────────────────
-        # Email is the most reliable identifier of a real person. Files often
-        # differ at the byte level (re-export, browser modifications, version
-        # changes) so file_hash alone misses re-applications. We check both:
-        #   1. EMAIL match → same person, even with a different file: tell
-        #      them their application is already on file. We also update the
-        #      existing record's applied_position so HR can see they're
-        #      interested in this new role too.
-        #   2. FILE-HASH match (no email match) → byte-identical resume from
-        #      a different email. Could be the same person using a different
-        #      address, OR a fraud attempt. Still treat as duplicate.
+        # ── De-dupe ───────────────────────────────────────────────────────────
+        # Identity comes from the RESUME, not the form, so a candidate cannot
+        # bypass dedup by typing a different name/email at submission time.
+        # We check (in order):
+        #   1. EMAIL match on the effective email (parsed → form). Catches the
+        #      common case of the same person re-applying, even if they used a
+        #      different file or typed something different in the form.
+        #   2. FILE-HASH match. Byte-identical resume on file already.
+        #   3. NAME + PHONE match. Catches a re-application with a different
+        #      email but the same resume content.
         existing_by_email = conn.execute(
             'SELECT id, applied_position FROM applicants '
             'WHERE LOWER(email) = LOWER(?)', (email,)
@@ -3717,7 +3743,8 @@ def api_careers_apply():
                 pass
             log_action('CAREER APPLICATION (DUP)', name,
                        f'Already on file as id={existing_by_email["id"]}. '
-                       f'Added position: {position or "Open"} | IP: {client_ip}')
+                       f'Added position: {position or "Open"} | IP: {client_ip}'
+                       + (f' | {" ".join(discrepancy_notes)}' if discrepancy_notes else ''))
             return jsonify({
                 'ok': True,
                 'applicant_id': existing_by_email['id'],
@@ -3734,7 +3761,8 @@ def api_careers_apply():
         ).fetchone()
         if existing_by_hash:
             log_action('CAREER APPLICATION (DUP)', name,
-                       f'Same resume as id={existing_by_hash["id"]}. IP: {client_ip}')
+                       f'Same resume as id={existing_by_hash["id"]}. IP: {client_ip}'
+                       + (f' | {" ".join(discrepancy_notes)}' if discrepancy_notes else ''))
             return jsonify({
                 'ok': True,
                 'applicant_id': existing_by_hash['id'],
@@ -3742,6 +3770,35 @@ def api_careers_apply():
                 'message': ("We already have this resume on file — we'll "
                             "review it for this position. Thank you!"),
             })
+
+        # Name + phone match — catches the same person re-applying with a
+        # different email but the same resume content.
+        if name and phone:
+            existing_by_name_phone = conn.execute(
+                'SELECT id FROM applicants '
+                'WHERE LOWER(name) = LOWER(?) AND phone = ?',
+                (name, phone)
+            ).fetchone()
+            if existing_by_name_phone:
+                log_action('CAREER APPLICATION (DUP)', name,
+                           f'Name+phone match id={existing_by_name_phone["id"]}. '
+                           f'IP: {client_ip}'
+                           + (f' | {" ".join(discrepancy_notes)}' if discrepancy_notes else ''))
+                return jsonify({
+                    'ok': True,
+                    'applicant_id': existing_by_name_phone['id'],
+                    'duplicate': True,
+                    'message': ("We already have your application on file — "
+                                "thank you! Our team will be in touch."),
+                })
+
+        # Build the notes field: parsed resume notes + any discrepancy flags.
+        notes_parts = []
+        if parsed.get('notes'):
+            notes_parts.append(parsed['notes'])
+        if discrepancy_notes:
+            notes_parts.append('⚠ ' + ' '.join(discrepancy_notes))
+        combined_notes = '\n\n'.join(notes_parts)
 
         cur = conn.execute(
             '''INSERT INTO applicants
@@ -3751,13 +3808,13 @@ def api_careers_apply():
                 cover_letter)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (
-                name, email, phone or parsed.get('phone', ''),
+                name, email, phone,
                 parsed.get('specialty', position or ''),
                 _safe_int(parsed.get('years_experience'), 0),
                 parsed.get('highest_education', ''),
                 parsed.get('skills', ''),
                 final_name,
-                parsed.get('notes', ''),
+                combined_notes,
                 datetime.now().isoformat(timespec='seconds'),
                 'Under Review',
                 linkedin_url or parsed.get('linkedin_url', ''),
@@ -3772,7 +3829,8 @@ def api_careers_apply():
         conn.commit()
 
     log_action('CAREER APPLICATION', name,
-               f'Position: {position_label} | IP: {client_ip}')
+               f'Position: {position_label} | IP: {client_ip}'
+               + (f' | {" ".join(discrepancy_notes)}' if discrepancy_notes else ''))
 
     return jsonify({
         'ok': True,
