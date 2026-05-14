@@ -104,6 +104,11 @@
       </a>
       {% endif %}
       {% if require_login %}
+      <form method="POST" action="{{ url_for('logout') }}" class="d-inline m-0">
+        <button type="submit" class="btn btn-outline-light fw-semibold px-3" title="Sign out">
+          <i class="bi bi-box-arrow-right me-1"></i> Sign Out
+        </button>
+      </form>
       <div class="dropdown">
         <button class="btn btn-outline-light dropdown-toggle d-flex align-items-center gap-2"
                 type="button" data-bs-toggle="dropdown" aria-expanded="false">

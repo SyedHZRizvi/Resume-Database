@@ -939,6 +939,14 @@ def login():
                 )
                 conn.commit()
                 remember_me = (request.form.get('remember_me') or '').strip() == '1'
+                # Security policy: long-lived sessions are only allowed for
+                # super_admin accounts. The database holds PII (resumes,
+                # personal contact info, hiring decisions); a forgotten
+                # session on a shared device would be a serious leak.
+                # All non-super_admin sessions are forced into the strict
+                # 30-min idle timeout, regardless of what the user ticked.
+                if user['role'] != 'super_admin':
+                    remember_me = False
                 session.permanent = True
                 session['user_id']          = user['id']
                 session['username']         = user['username']
