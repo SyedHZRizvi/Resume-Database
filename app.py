@@ -27,16 +27,36 @@ try:
 except ImportError:
     ANTHROPIC_API_KEY = ''
 
-# ── Login on/off switch + security settings (set in config.py) ───────────
+# ── Login on/off switch + security settings ───────────────────────────────
+# Lookup order:
+#   1. config.py (local development, never deployed) — wins if it exists.
+#   2. REQUIRE_LOGIN env var — explicit override on the host.
+#   3. Auto-detect: if we're running on a managed cloud host (Render, Heroku,
+#      Railway, Fly, etc.), login is forced ON. On localhost it stays OFF
+#      so the developer doesn't have to log in every time they restart the
+#      dev server. The signal we use is the presence of host-specific env
+#      vars OR a real DATABASE_URL (no one runs Postgres locally for this
+#      app — local dev is SQLite).
 try:
     from config import REQUIRE_LOGIN as _require_login
     REQUIRE_LOGIN = bool(_require_login)
 except ImportError:
-    # Default: FALSE — same behaviour as localhost. The URL "just works"
-    # without a login screen. To turn login on later, set REQUIRE_LOGIN=true
-    # as an env var on the host (Render dashboard → Environment).
     _env_login = (os.environ.get('REQUIRE_LOGIN') or '').strip().lower()
-    REQUIRE_LOGIN = _env_login in ('1', 'true', 'yes', 'on')
+    if _env_login in ('1', 'true', 'yes', 'on'):
+        REQUIRE_LOGIN = True
+    elif _env_login in ('0', 'false', 'no', 'off'):
+        REQUIRE_LOGIN = False
+    else:
+        _on_cloud_host = bool(
+            (os.environ.get('DATABASE_URL') or '').strip() or
+            os.environ.get('RENDER') or
+            os.environ.get('RENDER_SERVICE_ID') or
+            os.environ.get('RAILWAY_ENVIRONMENT') or
+            os.environ.get('FLY_APP_NAME') or
+            os.environ.get('HEROKU_APP_NAME') or
+            os.environ.get('DYNO')
+        )
+        REQUIRE_LOGIN = _on_cloud_host
 
 try:
     from config import SESSION_TIMEOUT_MINUTES as _stm
@@ -98,13 +118,24 @@ app = Flask(__name__)
 
 # ── Persistent secret key ─────────────────────────────────────────────────
 # Lookup order:
-#   1. FLASK_SECRET_KEY environment variable  (production — Render/Railway)
-#   2. .secret_key file in the app folder      (local dev)
-#   3. Auto-generate and save to file          (first run, local)
-# Setting FLASK_SECRET_KEY in production keeps logins alive across redeploys.
+#   1. FLASK_SECRET_KEY env var (explicit override)
+#   2. Derived from DATABASE_URL hash (stable per-deployment, survives
+#      redeploys without anyone having to set FLASK_SECRET_KEY manually).
+#      Safe because DATABASE_URL is itself a secret the host already protects.
+#   3. .secret_key file in the app folder (local dev)
+#   4. Auto-generate and persist (first local run)
 _env_secret = os.environ.get('FLASK_SECRET_KEY', '').strip()
 if _env_secret:
     app.secret_key = _env_secret
+elif (os.environ.get('DATABASE_URL') or '').strip():
+    # Production environment with a cloud Postgres. Hash the URL with a
+    # constant app-specific salt to get a stable 64-char hex string. This
+    # key is identical across redeploys of the same app (so sessions
+    # survive deploys) but unique per environment (staging vs prod).
+    import hashlib as _hashlib
+    app.secret_key = _hashlib.sha256(
+        (os.environ['DATABASE_URL'] + '|transcrypts-resume-db|v1').encode('utf-8')
+    ).hexdigest()
 else:
     _secret_key_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.secret_key')
     if os.path.exists(_secret_key_file):
@@ -116,9 +147,6 @@ else:
             with open(_secret_key_file, 'w') as _f:
                 _f.write(_sk)
         except OSError:
-            # Read-only filesystem (e.g. some hosted environments) — that's OK,
-            # we just won't persist the key. Sessions reset on redeploy until
-            # FLASK_SECRET_KEY env var is set.
             pass
         app.secret_key = _sk
 
