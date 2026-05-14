@@ -126,6 +126,12 @@ UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'upload
 ALLOWED_EXTENSIONS = {'pdf', 'doc', 'docx', 'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tiff', 'tif'}
 DATABASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'resumes.db')
 
+# How long a "Remember Me" session lives in the browser cookie. The actual
+# idle-timeout check still runs in before_request; this is just the upper
+# bound that Flask will let the cookie survive.
+REMEMBER_ME_DAYS = 30
+app.permanent_session_lifetime = timedelta(days=REMEMBER_ME_DAYS)
+
 # ── TransCrypts logo for emails (loaded as raw bytes; sent as CID attachment) ──
 # Gmail and most email clients block data: URIs, but CID (Content-ID) inline
 # attachments are fully supported everywhere.  The bytes are attached to the
@@ -544,8 +550,16 @@ def check_session_timeout():
 
     last = session.get('last_activity')
     if last:
-        idle_minutes = (datetime.now() - datetime.fromisoformat(last)).seconds / 60
-        if idle_minutes > SESSION_TIMEOUT_MINUTES:
+        # "Remember Me" sessions get a much longer idle window — basically the
+        # full cookie lifetime — so the user can leave the tab idle for a day
+        # and come back without re-logging in. Sessions without Remember Me
+        # still enforce the strict timeout for security on shared devices.
+        if session.get('remember_me'):
+            idle_limit_minutes = REMEMBER_ME_DAYS * 24 * 60
+        else:
+            idle_limit_minutes = SESSION_TIMEOUT_MINUTES
+        idle_minutes = (datetime.now() - datetime.fromisoformat(last)).total_seconds() / 60
+        if idle_minutes > idle_limit_minutes:
             username = session.get('username', '')
             session.clear()
             flash(f'You were automatically signed out after '
@@ -896,6 +910,7 @@ def login():
                     (datetime.now().strftime('%Y-%m-%d %H:%M'), user['id'])
                 )
                 conn.commit()
+                remember_me = (request.form.get('remember_me') or '').strip() == '1'
                 session.permanent = True
                 session['user_id']          = user['id']
                 session['username']         = user['username']
@@ -903,8 +918,10 @@ def login():
                 session['user_role']        = user['role']
                 session['last_activity']    = datetime.now().isoformat()
                 session['must_change_pw']   = bool(user['must_change_password'])
+                session['remember_me']      = remember_me
                 log_action('LOGIN', user['username'],
-                           f'Role: {ROLES.get(user["role"], user["role"])}')
+                           f'Role: {ROLES.get(user["role"], user["role"])}'
+                           + (' [Remember Me]' if remember_me else ''))
                 flash(f'Welcome, {user["full_name"] or user["username"]}!', 'success')
                 return redirect(next_url if next_url and next_url.startswith('/') else url_for('index'))
             else:
