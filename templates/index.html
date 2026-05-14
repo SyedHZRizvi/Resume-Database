@@ -88,6 +88,9 @@
       <a href="{{ url_for('manage_users') }}" class="btn btn-outline-light fw-semibold px-3">
         <i class="bi bi-people-fill me-1"></i> Manage Users
       </a>
+      <a href="{{ url_for('admin_cleanup_content_duplicates') }}" class="btn btn-outline-light fw-semibold px-3">
+        <i class="bi bi-files me-1"></i> Find Duplicates
+      </a>
       {% endif %}
       {% if can_add %}
       <a href="{{ url_for('add_bulk') }}" class="btn btn-outline-light fw-semibold px-3">
