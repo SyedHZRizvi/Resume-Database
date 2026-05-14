@@ -155,10 +155,15 @@
                 <td class="text-center pe-4">
                   <div class="d-flex justify-content-center gap-1 flex-wrap">
 
-                    <!-- Unlock Account (only visible when locked) -->
-                    {% if u.locked_until %}
+                    <!-- Unlock / clear failed-attempt counter.
+                         Shows when account is actually locked OR has any
+                         non-zero failed-attempt count, so admins can wipe
+                         a stale failure counter without having to wait
+                         until the account is fully locked. -->
+                    {% if u.locked_until or (u.failed_attempts and u.failed_attempts > 0) %}
                       <form method="POST" action="{{ url_for('unlock_user', user_id=u.id) }}" class="d-inline">
-                        <button type="submit" class="btn btn-sm btn-success" title="Unlock Account">
+                        <button type="submit" class="btn btn-sm btn-success"
+                                title="{{ 'Unlock account' if u.locked_until else 'Clear failed-login counter' }}">
                           <i class="bi bi-unlock-fill"></i>
                         </button>
                       </form>
