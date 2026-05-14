@@ -117,6 +117,10 @@
             <li><a class="dropdown-item" href="{{ url_for('audit_log') }}">
               <i class="bi bi-journal-text me-2 text-muted"></i>Audit Log</a></li>
           {% endif %}
+          {% if can_users %}
+            <li><a class="dropdown-item" href="{{ url_for('admin_cleanup_content_duplicates') }}">
+              <i class="bi bi-files me-2 text-muted"></i>Find Duplicates</a></li>
+          {% endif %}
           <li><hr class="dropdown-divider"></li>
           <li>
             <form method="POST" action="{{ url_for('logout') }}" class="d-inline">

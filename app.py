@@ -4,7 +4,7 @@ Run this file with Python to start the app: python app.py
 Then open your browser at: http://localhost:5000
 """
 
-from flask import Flask, render_template, request, redirect, url_for, flash, send_from_directory, jsonify, session
+from flask import Flask, render_template, render_template_string, request, redirect, url_for, flash, send_from_directory, jsonify, session
 from functools import wraps
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -4018,11 +4018,134 @@ def api_careers_health():
 #    GET  /admin/cleanup-content-duplicates              → preview only
 #    POST /admin/cleanup-content-duplicates?execute=1    → actually delete
 # ──────────────────────────────────────────────────────────────────────────────
+_DUPLICATES_PAGE_TMPL = """<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Find Duplicates — Resume Database</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet">
+<style>
+  .keep-row   { background:#e8f5e9; }
+  .remove-row { background:#ffebee; }
+  .hash-cell  { font-family: monospace; font-size:.75rem; color:#6c757d; }
+</style>
+</head><body>
+<nav class="navbar navbar-dark bg-primary shadow-sm">
+  <div class="container-fluid px-4">
+    <a class="navbar-brand" href="{{ url_for('index') }}">
+      <i class="bi bi-arrow-left me-1"></i> TransCrypts Resume DB
+    </a>
+    <a href="{{ url_for('index') }}" class="btn btn-outline-light btn-sm">
+      <i class="bi bi-house-fill me-1"></i> Home
+    </a>
+  </div>
+</nav>
+
+<div class="container-fluid px-4 py-4">
+  <h2 class="mb-1"><i class="bi bi-files me-2"></i>Find Duplicates</h2>
+  <p class="text-muted">
+    Scans every applicant's resume content (not just file bytes) and groups
+    records that share the same content. The oldest record in each group is
+    kept; the newer ones are flagged for removal.
+  </p>
+
+  <div class="alert alert-info py-2 small">
+    <strong>Scan summary:</strong>
+    backfilled <strong>{{ backfilled }}</strong> missing content hash(es),
+    skipped <strong>{{ skipped }}</strong> file(s) we could not read.
+  </div>
+
+  {% if deleted %}
+    <div class="alert alert-success">
+      <i class="bi bi-check-circle-fill me-1"></i>
+      Removed {{ deleted|length }} duplicate record(s):
+      <ul class="mb-0 mt-1">
+        {% for d in deleted %}
+          <li>{{ d.name or '(no name)' }} (id #{{ d.id }})</li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  {% if not duplicate_groups %}
+    <div class="alert alert-success">
+      <i class="bi bi-check-circle me-1"></i>
+      No content-duplicates found. Every resume in the database has unique text.
+    </div>
+  {% else %}
+    <form method="POST" action="{{ url_for('admin_cleanup_content_duplicates') }}?execute=1"
+          onsubmit="return confirm('Delete {{ will_delete_count }} duplicate record(s)? The oldest record in each group is kept. This cannot be undone.');">
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <div>Found <strong>{{ duplicate_groups|length }}</strong> duplicate group(s)
+             — <strong>{{ will_delete_count }}</strong> record(s) will be removed.</div>
+        <button class="btn btn-danger" type="submit">
+          <i class="bi bi-trash3-fill me-1"></i> Delete {{ will_delete_count }} duplicate(s)
+        </button>
+      </div>
+
+      {% for g in duplicate_groups %}
+        <div class="card mb-3 shadow-sm">
+          <div class="card-header py-2 d-flex justify-content-between">
+            <span>Group <span class="hash-cell">{{ g.text_hash[:12] }}…</span></span>
+            <span class="text-muted small">{{ g.remove|length }} duplicate(s)</span>
+          </div>
+          <div class="table-responsive">
+            <table class="table table-sm mb-0">
+              <thead class="table-light">
+                <tr><th>Status</th><th>ID</th><th>Name</th><th>Email</th>
+                    <th>Source</th><th>Date added</th><th></th></tr>
+              </thead>
+              <tbody>
+                <tr class="keep-row">
+                  <td><span class="badge bg-success">KEEP (oldest)</span></td>
+                  <td>#{{ g.keep.id }}</td>
+                  <td><strong>{{ g.keep.name or '(no name)' }}</strong></td>
+                  <td>{{ g.keep.email or '—' }}</td>
+                  <td>{{ g.keep.source or '—' }}</td>
+                  <td>{{ g.keep.date_added or '—' }}</td>
+                  <td><a class="btn btn-sm btn-outline-secondary"
+                         href="{{ url_for('view_resume', applicant_id=g.keep.id) }}">View</a></td>
+                </tr>
+                {% for m in g.remove %}
+                <tr class="remove-row">
+                  <td><span class="badge bg-danger">REMOVE</span></td>
+                  <td>#{{ m.id }}</td>
+                  <td>{{ m.name or '(no name)' }}</td>
+                  <td>{{ m.email or '—' }}</td>
+                  <td>{{ m.source or '—' }}</td>
+                  <td>{{ m.date_added or '—' }}</td>
+                  <td><a class="btn btn-sm btn-outline-secondary"
+                         href="{{ url_for('view_resume', applicant_id=m.id) }}">View</a></td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      {% endfor %}
+    </form>
+  {% endif %}
+</div>
+</body></html>
+"""
+
+
 @app.route('/admin/cleanup-content-duplicates', methods=['GET', 'POST'])
 @role_required(*CAN_USERS)
 def admin_cleanup_content_duplicates():
-    execute = (request.args.get('execute') or '').strip() == '1' \
-              and request.method == 'POST'
+    """
+    Two-step UX so no data is lost by accident:
+      GET                                          → backfill + preview page
+      POST /…?execute=1                            → actually delete
+
+    JSON variant for API/curl usage:
+      GET /…?format=json
+      POST /…?execute=1&format=json
+    """
+    execute    = (request.args.get('execute') or '').strip() == '1' \
+                 and request.method == 'POST'
+    want_json  = (request.args.get('format') or '').strip().lower() == 'json'
 
     # ── 1. Backfill missing text_hash values ────────────────────────────────
     backfilled = 0
@@ -4077,8 +4200,8 @@ def admin_cleanup_content_duplicates():
         remove  = members[1:]
         duplicate_groups.append({
             'text_hash': g['text_hash'],
-            'keep':      dict(keep) if not isinstance(keep, dict) else keep,
-            'remove':    [dict(m) if not isinstance(m, dict) else m for m in remove],
+            'keep':      dict(keep) if not isinstance(keep, dict) else dict(keep),
+            'remove':    [dict(m) for m in remove],
         })
         ids_to_delete.extend([m['id'] for m in remove])
 
@@ -4093,7 +4216,6 @@ def admin_cleanup_content_duplicates():
                 ).fetchone()
                 if not row:
                     continue
-                # Best-effort file delete; ignore errors so DB stays consistent.
                 try:
                     if row['resume_filename']:
                         _storage.delete_file(row['resume_filename'])
@@ -4105,23 +4227,52 @@ def admin_cleanup_content_duplicates():
                 log_action('DUPLICATE REMOVED', row['name'] or f'id={did}',
                            f'Removed via content-duplicate cleanup (id={did})')
 
-    return jsonify({
-        'ok':          True,
-        'mode':        'executed' if execute else 'preview',
-        'backfilled':  backfilled,
-        'skipped':     skipped,
-        'duplicate_groups': duplicate_groups,
-        'will_delete_ids':  ids_to_delete if not execute else [],
-        'deleted':     deleted,
-        'instructions': (
-            'POST to /admin/cleanup-content-duplicates?execute=1 to delete '
-            'the newer records in each duplicate group (the oldest record is '
-            'always kept).'
-        ) if not execute else (
-            f'Deleted {len(deleted)} duplicate record(s). The original record '
-            f'in each group was preserved.'
-        ),
-    })
+        # After deleting, the previously-detected groups are stale. Re-scan so
+        # the page now shows "no duplicates" (or any leftovers) accurately.
+        with get_db() as conn:
+            groups_rows = conn.execute(
+                "SELECT text_hash, COUNT(*) AS n FROM applicants "
+                "WHERE text_hash IS NOT NULL AND text_hash != '' "
+                "GROUP BY text_hash HAVING COUNT(*) > 1"
+            ).fetchall()
+        duplicate_groups = []
+        ids_to_delete    = []
+        for g in groups_rows:
+            with get_db() as conn:
+                members = conn.execute(
+                    'SELECT id, name, email, date_added, resume_filename, source '
+                    'FROM applicants WHERE text_hash=? '
+                    'ORDER BY date_added ASC, id ASC',
+                    (g['text_hash'],)
+                ).fetchall()
+            if len(members) < 2:
+                continue
+            duplicate_groups.append({
+                'text_hash': g['text_hash'],
+                'keep':      dict(members[0]),
+                'remove':    [dict(m) for m in members[1:]],
+            })
+            ids_to_delete.extend([m['id'] for m in members[1:]])
+
+    if want_json:
+        return jsonify({
+            'ok':          True,
+            'mode':        'executed' if execute else 'preview',
+            'backfilled':  backfilled,
+            'skipped':     skipped,
+            'duplicate_groups': duplicate_groups,
+            'will_delete_ids':  ids_to_delete if not execute else [],
+            'deleted':     deleted,
+        })
+
+    return render_template_string(
+        _DUPLICATES_PAGE_TMPL,
+        backfilled        = backfilled,
+        skipped           = skipped,
+        duplicate_groups  = duplicate_groups,
+        will_delete_count = len(ids_to_delete),
+        deleted           = deleted,
+    )
 
 
 @app.route('/api-status', methods=['GET'])
