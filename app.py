@@ -156,8 +156,12 @@ DATABASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'resumes.db'
 
 # How long a "Remember Me" session lives in the browser cookie. The actual
 # idle-timeout check still runs in before_request; this is just the upper
-# bound that Flask will let the cookie survive.
-REMEMBER_ME_DAYS = 30
+# bound that Flask will let the cookie survive. A full year keeps a
+# developer's personal-laptop session essentially permanent — they log in
+# once and the cookie covers them for a full year before it has to be
+# renewed. Non-super_admin sessions still hit the 30-min idle timeout
+# regardless, see login() and the before_request handler.
+REMEMBER_ME_DAYS = 365
 app.permanent_session_lifetime = timedelta(days=REMEMBER_ME_DAYS)
 
 # ── TransCrypts logo for emails (loaded as raw bytes; sent as CID attachment) ──
