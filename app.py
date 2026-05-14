@@ -647,6 +647,61 @@ def _read_file_bytes_from_field(file_obj):
     return data
 
 
+def parse_resume_bytes(raw_bytes, filename):
+    """Run the standard extract + smart_parse pipeline on raw resume bytes.
+    Returns a dict with name/email/phone/etc., never None."""
+    if not raw_bytes:
+        return {}
+    try:
+        text = _extract_text_from_file(raw_bytes, (filename or '').lower())
+        if text and text.strip():
+            return _smart_parse(text) or {}
+    except Exception:
+        pass
+    return {}
+
+
+def find_identity_match(name='', email='', phone='', exclude_id=None):
+    """Return an existing applicant row that looks like the SAME PERSON, or None.
+
+    Match strategies (strongest first):
+      1. Email exact match (case-insensitive) — almost certainly the same person.
+      2. Name + phone exact match — same person who used a different email.
+
+    We deliberately do NOT match on name alone because common names produce
+    huge false-positive rates; "John Smith" applying twice is normal.
+    """
+    name  = (name or '').strip()
+    email = (email or '').strip()
+    phone = (phone or '').strip()
+
+    with get_db() as conn:
+        if email:
+            q = ('SELECT id, name, email, phone, specialty, hiring_status, '
+                 'date_added FROM applicants WHERE LOWER(email) = LOWER(?)')
+            params = [email]
+            if exclude_id is not None:
+                q += ' AND id != ?'
+                params.append(exclude_id)
+            row = conn.execute(q, params).fetchone()
+            if row:
+                return dict(row)
+
+        if name and phone:
+            q = ('SELECT id, name, email, phone, specialty, hiring_status, '
+                 'date_added FROM applicants '
+                 'WHERE LOWER(name) = LOWER(?) AND phone = ?')
+            params = [name, phone]
+            if exclude_id is not None:
+                q += ' AND id != ?'
+                params.append(exclude_id)
+            row = conn.execute(q, params).fetchone()
+            if row:
+                return dict(row)
+
+    return None
+
+
 # ─── Auth routes ──────────────────────────────────────────────────────────────
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -1362,6 +1417,31 @@ def add_resume():
                         )
                         return render_template('add_resume.html', form=request.form)
 
+                # ── Identity match from the parsed resume content ───────────
+                # Parses the file and checks whether the email or name+phone
+                # inside it already belongs to another applicant. Catches the
+                # "same person, brand-new file, no form-input duplicates" case
+                # which the earlier checks all miss.
+                parsed = parse_resume_bytes(_file_bytes, file.filename)
+                id_match = find_identity_match(
+                    name  = parsed.get('name')  or name,
+                    email = parsed.get('email') or email,
+                    phone = parsed.get('phone') or phone,
+                )
+                if id_match and not confirmed:
+                    flash(
+                        f'The uploaded resume looks like the same person as an '
+                        f'existing record: "{id_match["name"]}" (ID #{id_match["id"]}, '
+                        f'specialty: {id_match.get("specialty") or "—"}, status: '
+                        f'{id_match.get("hiring_status") or "—"}). If you are '
+                        f'updating this person\'s resume, edit their existing '
+                        f'record instead. If this really is a different '
+                        f'applicant, tick the duplicate-confirmation box and '
+                        f'resubmit.',
+                        'error'
+                    )
+                    return render_template('add_resume.html', form=request.form)
+
                 resume_filename = make_unique_filename(file.filename)
                 _storage.save_file(resume_filename, _file_bytes,
                                    file.mimetype or 'application/octet-stream')
@@ -1444,6 +1524,25 @@ def add_bulk():
                     })
                     continue
 
+            # Parse BEFORE saving so we can run identity dedup without writing
+            # files we are going to reject anyway.
+            parsed = parse_resume_bytes(_file_bytes, file.filename)
+
+            # ── Identity match: same person already in the database? ────────
+            id_match = find_identity_match(
+                name  = parsed.get('name', ''),
+                email = parsed.get('email', ''),
+                phone = parsed.get('phone', ''),
+            )
+            if id_match:
+                failed.append({
+                    'filename': file.filename,
+                    'reason': (f'Same person already on record: '
+                               f'"{id_match["name"]}" (ID #{id_match["id"]}). '
+                               f'Edit that record to update their resume.')
+                })
+                continue
+
             # Save the file via storage abstraction (works with Supabase or local)
             filename = make_unique_filename(file.filename)
             try:
@@ -1452,9 +1551,6 @@ def add_bulk():
             except Exception as e:
                 failed.append({'filename': file.filename, 'reason': f'Could not save: {e}'})
                 continue
-
-            # Auto-parse (same logic used on startup)
-            parsed = _parse_saved_file(filename) or {}
 
             # ── Build fallback name from filename if parsing found nothing ────
             # Strip common resume-tool prefixes/suffixes so a file named
