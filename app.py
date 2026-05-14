@@ -16,6 +16,8 @@ import base64
 import json
 import secrets
 import hashlib
+import re
+import hmac
 
 # ── Anthropic API key resolution ───────────────────────────────────────────
 # Priority 1: config.py (user-supplied key)
@@ -110,6 +112,67 @@ OFFICE_ADDRESS       = _cfg('OFFICE_ADDRESS',        '160 Front Street West, Tor
 OFFICE_FLOOR_ROOM    = _cfg('OFFICE_FLOOR_ROOM',     'Office 1820, 18th Floor')
 OFFICE_CONTACT_NAME  = _cfg('OFFICE_CONTACT_NAME',  'Reception')
 OFFICE_CONTACT_PHONE = _cfg('OFFICE_CONTACT_PHONE', '')
+
+
+# ── Indeed inbox ingestion (IMAP) ─────────────────────────────────────────
+# Read at request-time via _indeed_settings() so env-var changes on the host
+# take effect without a code redeploy. The poll endpoint and admin page both
+# go through that helper, so there's exactly one source of truth.
+def _truthy(val, default=True):
+    """Parse a string flag like 'true' / 'false' / '1' / '0' / 'yes' / 'no'."""
+    if val is None or val == '':
+        return default
+    return str(val).strip().lower() in ('1', 'true', 'yes', 'on', 'y', 't')
+
+
+def _indeed_settings():
+    """Return the current Indeed-inbox config as a dict (never raises).
+
+    Each call re-reads via _cfg(), so changing the env vars on Render and
+    redeploying is enough — no code change needed. We never log or echo back
+    the password value; the admin page only checks `is_configured`.
+    """
+    host    = (_cfg('INDEED_IMAP_HOST', '') or '').strip()
+    user    = (_cfg('INDEED_IMAP_USER', '') or '').strip()
+    pwd     = _cfg('INDEED_IMAP_PASSWORD', '') or ''
+    folder  = (_cfg('INDEED_IMAP_FOLDER', 'INBOX') or 'INBOX').strip() or 'INBOX'
+    use_ssl = _truthy(_cfg('INDEED_IMAP_USE_SSL', 'true'), default=True)
+    try:
+        port = int(_cfg('INDEED_IMAP_PORT', '993') or (993 if use_ssl else 143))
+    except (TypeError, ValueError):
+        port = 993 if use_ssl else 143
+    domains_raw = (_cfg('INDEED_SENDER_DOMAINS',
+                        'indeed.com,indeedemail.com') or '')
+    domains = tuple(d.strip().lower() for d in domains_raw.split(',') if d.strip())
+    if not domains:
+        domains = ('indeed.com', 'indeedemail.com')
+    token = (_cfg('INDEED_CRON_TOKEN', '') or '').strip()
+
+    missing = []
+    if not host: missing.append('INDEED_IMAP_HOST')
+    if not user: missing.append('INDEED_IMAP_USER')
+    # The password / token are also required for actual polling, but we
+    # surface them as separate warnings so the admin page can be precise.
+    missing_for_poll = list(missing)
+    if not pwd:   missing_for_poll.append('INDEED_IMAP_PASSWORD')
+    if not token: missing_for_poll.append('INDEED_CRON_TOKEN')
+
+    return {
+        'host':              host,
+        'port':              port,
+        'user':              user,
+        'password':          pwd,
+        'folder':            folder,
+        'use_ssl':           use_ssl,
+        'sender_domains':    domains,
+        'cron_token':        token,
+        'is_configured':     bool(host and user),
+        'is_poll_ready':     bool(host and user and pwd and token),
+        'missing':           missing,
+        'missing_for_poll':  missing_for_poll,
+    }
+
+
 # When Claude Code manages auth, the base URL is set and the key may be empty
 CLAUDE_CODE_MANAGED = bool(os.environ.get('CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST', ''))
 from datetime import datetime, timedelta
@@ -458,6 +521,21 @@ def init_db():
         # Old 'admin' → 'super_admin'   |   Old 'user' → 'recruiter'
         conn.execute("UPDATE users SET role='super_admin' WHERE role='admin'")
         conn.execute("UPDATE users SET role='recruiter'   WHERE role='user'")
+
+        # ── Indeed inbox poll status (single-row state table) ────────────────
+        # Exactly one row (id=1) is kept and upserted on every poll. Lets the
+        # admin page show "Last run: …, processed N, created N" without having
+        # to scan the audit log.
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS indeed_poll_status (
+                id         INTEGER PRIMARY KEY,
+                last_run   TEXT,
+                processed  INTEGER DEFAULT 0,
+                created    INTEGER DEFAULT 0,
+                duplicates INTEGER DEFAULT 0,
+                errors     TEXT
+            )
+        ''')
 
         conn.commit()
 
@@ -5169,6 +5247,685 @@ def admin_email_test():
             f'{datetime.now().isoformat(timespec="seconds")}.</p>')
     ok, err = _send_email(to, 'TransCrypts: SMTP test email', html)
     return jsonify({'ok': ok, 'message': err if not ok else f'Sent to {to}'})
+
+
+# ── Indeed inbox ingestion ──────────────────────────────────────────────────
+# Polls the configured IMAP mailbox for UNSEEN messages from Indeed and turns
+# each one into an applicant record using the existing parsing pipeline.
+# Triggered by an external cron (e.g. cron-job.org) hitting the poll endpoint
+# with the configured token. Designed so the entire feature is a no-op until
+# INDEED_IMAP_HOST + INDEED_IMAP_USER are set on the host.
+
+_INDEED_NAME_RE  = re.compile(r'(?:Candidate(?:\sname)?|Name|Applicant)\s*[:\-]\s*([A-Z][A-Za-z\'\-\. ]{1,80})')
+_INDEED_PHONE_RE = re.compile(r'(?:\+?\d[\d\-\s\(\)]{6,}\d)')
+_INDEED_EMAIL_RE = re.compile(r'[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}')
+_INDEED_SUBJ_NAME_RE = re.compile(
+    r'^(?:\s*\[?indeed\]?\s*[:\-]?\s*)?'             # optional "[Indeed]" prefix
+    r'(?:new\s+candidate(?:\s+for)?|new\s+application(?:\s+for)?)?\s*'
+    r'([A-Z][A-Za-z\'\-\. ]{1,80}?)'                 # candidate name
+    r'\s+applied\s+to\s+(?:your\s+)?(.+?)(?:\s+job)?\s*$',
+    re.IGNORECASE,
+)
+_INDEED_SUBJ_POS_RE = re.compile(
+    r'(?:new\s+candidate\s+for|new\s+application\s+for|for\s+your)\s+(.+?)\s*$',
+    re.IGNORECASE,
+)
+_INDEED_LINK_LABEL_RE = re.compile(
+    r'(?:download|view|see)\s+(?:the\s+)?(?:full\s+)?(?:resume|cv|attachment|application)',
+    re.IGNORECASE,
+)
+
+
+def _strip_html(html):
+    """Crude tag-stripper for the rare email that has no plain-text part.
+    Drops <script>/<style> blocks, replaces <br>/<p>/<div> with newlines,
+    then strips remaining tags. Good enough for regex extraction; we never
+    show this text to a user.
+    """
+    if not html:
+        return ''
+    try:
+        s = re.sub(r'(?is)<(script|style)[^>]*>.*?</\1>', ' ', html)
+        s = re.sub(r'(?i)<br\s*/?>', '\n', s)
+        s = re.sub(r'(?i)</(p|div|li|tr|h[1-6])\s*>', '\n', s)
+        s = re.sub(r'<[^>]+>', ' ', s)
+        # Decode the most common HTML entities without pulling in extra deps.
+        try:
+            import html as _htmllib
+            s = _htmllib.unescape(s)
+        except Exception:
+            pass
+        s = re.sub(r'[ \t]+', ' ', s)
+        s = re.sub(r'\n{2,}', '\n\n', s)
+        return s.strip()
+    except Exception:
+        return html or ''
+
+
+def _email_address_domain(addr):
+    """Return the lowercased domain part of an email address (or '')."""
+    if not addr:
+        return ''
+    m = _INDEED_EMAIL_RE.search(addr)
+    if not m:
+        return ''
+    return m.group(0).rsplit('@', 1)[-1].lower()
+
+
+def _decode_email_part(part):
+    """Decode a single email body part into a unicode string. Best-effort —
+    falls back to latin-1 if the declared charset is missing or wrong."""
+    try:
+        payload = part.get_payload(decode=True)
+        if payload is None:
+            return ''
+        charset = part.get_content_charset() or 'utf-8'
+        try:
+            return payload.decode(charset, errors='replace')
+        except (LookupError, TypeError):
+            return payload.decode('utf-8', errors='replace')
+    except Exception:
+        return ''
+
+
+def _extract_indeed_email_content(msg):
+    """Walk an email.Message and return (text_body, html_body, attachments,
+    reply_to_email). Attachments come back as a list of (filename, bytes,
+    content_type) tuples — only those that look like resume files are kept."""
+    text_body = ''
+    html_body = ''
+    attachments = []
+
+    for part in msg.walk():
+        ctype = (part.get_content_type() or '').lower()
+        disposition = (part.get('Content-Disposition') or '').lower()
+        filename = part.get_filename() or ''
+        if filename:
+            # Some clients send the filename RFC2047-encoded
+            try:
+                from email.header import decode_header, make_header
+                filename = str(make_header(decode_header(filename)))
+            except Exception:
+                pass
+        is_attachment = ('attachment' in disposition) or bool(filename)
+
+        if is_attachment and filename:
+            ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+            if ext in ('pdf', 'doc', 'docx'):
+                try:
+                    data = part.get_payload(decode=True) or b''
+                except Exception:
+                    data = b''
+                if data:
+                    attachments.append((filename, data, ctype or 'application/octet-stream'))
+            continue
+
+        if ctype == 'text/plain' and not text_body:
+            text_body = _decode_email_part(part)
+        elif ctype == 'text/html' and not html_body:
+            html_body = _decode_email_part(part)
+
+    # Reply-To is often the candidate's real email on Indeed messages.
+    reply_to_email = ''
+    rt_header = msg.get('Reply-To') or msg.get('Return-Path') or ''
+    if rt_header:
+        m = _INDEED_EMAIL_RE.search(rt_header)
+        if m:
+            reply_to_email = m.group(0)
+
+    return text_body, html_body, attachments, reply_to_email
+
+
+def _parse_indeed_email_fields(subject, text_body, html_body, reply_to_email):
+    """Extract candidate name / email / phone / applied position from an
+    Indeed email. All return values are stripped strings (possibly empty).
+    """
+    body_text = text_body or _strip_html(html_body) or ''
+    subject = (subject or '').strip()
+
+    # ── Position ─────────────────────────────────────────────────────────────
+    position = ''
+    m = _INDEED_SUBJ_NAME_RE.match(subject)
+    if m:
+        position = m.group(2).strip()
+    else:
+        m = _INDEED_SUBJ_POS_RE.search(subject)
+        if m:
+            position = m.group(1).strip()
+    # Common cleanup: strip trailing " job" / quotes / Indeed boilerplate
+    position = re.sub(r'(?i)\s+job\s*$', '', position).strip(' "\'')
+    if not position:
+        # Try body line like "Position: X" or "applied to the X position"
+        bm = re.search(r'(?im)^\s*(?:position|job\s*title|role)\s*[:\-]\s*(.+)$', body_text)
+        if bm:
+            position = bm.group(1).strip()
+        else:
+            bm = re.search(r'(?i)applied\s+(?:to|for)\s+(?:the\s+|your\s+)?(.+?)(?:\s+position|\s+role|\.|$)',
+                            body_text[:600])
+            if bm:
+                position = bm.group(1).strip()
+    if not position:
+        position = 'Indeed Application'
+
+    # ── Name ─────────────────────────────────────────────────────────────────
+    name = ''
+    m = _INDEED_SUBJ_NAME_RE.match(subject)
+    if m:
+        name = m.group(1).strip()
+    if not name:
+        bm = _INDEED_NAME_RE.search(body_text[:2000])
+        if bm:
+            name = bm.group(1).strip()
+    if not name:
+        # Heuristic: the first short ALL-OR-Title-Case line near the top of
+        # the body that's not an Indeed boilerplate phrase.
+        for ln in (body_text.splitlines()[:25] if body_text else []):
+            s = ln.strip()
+            if not s or len(s) > 60:
+                continue
+            if re.search(r'(?i)indeed|application|candidate|resume|view|download|reply|new', s):
+                continue
+            if re.match(r'^[A-Z][A-Za-z\'\-\.]+(?:\s+[A-Z][A-Za-z\'\-\.]+){1,3}$', s):
+                name = s
+                break
+
+    # ── Email ────────────────────────────────────────────────────────────────
+    # Strongly prefer Reply-To since Indeed sets that to the candidate's
+    # actual email. Fall back to the first email in the body that is NOT
+    # an Indeed domain.
+    email_addr = ''
+    if reply_to_email and 'indeed.com' not in reply_to_email.lower() \
+                     and 'indeedemail.com' not in reply_to_email.lower():
+        email_addr = reply_to_email.strip()
+    if not email_addr:
+        for em in _INDEED_EMAIL_RE.findall(body_text or ''):
+            lo = em.lower()
+            if 'indeed.com' in lo or 'indeedemail.com' in lo or 'noreply' in lo or 'no-reply' in lo:
+                continue
+            email_addr = em
+            break
+
+    # ── Phone ────────────────────────────────────────────────────────────────
+    phone = ''
+    bm = _INDEED_PHONE_RE.search(body_text or '')
+    if bm:
+        phone = bm.group(0).strip()
+
+    return {
+        'name':     name,
+        'email':    email_addr,
+        'phone':    phone,
+        'position': position,
+    }
+
+
+def _find_indeed_resume_link(text_body, html_body):
+    """Return the first URL in the email body that looks like a 'Download
+    resume' or 'View attachment' link — or '' if none found. We scan the
+    HTML for anchor tags with matching labels first (more reliable), then
+    fall back to a plain-text URL scan."""
+    if html_body:
+        # Find each <a href="...">label</a> and pick one whose label matches.
+        for m in re.finditer(r'(?is)<a[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+                              html_body):
+            href = m.group(1)
+            label = _strip_html(m.group(2)) or ''
+            if _INDEED_LINK_LABEL_RE.search(label):
+                return href
+    # Plain-text fallback
+    body = text_body or _strip_html(html_body) or ''
+    for line in body.splitlines():
+        if _INDEED_LINK_LABEL_RE.search(line):
+            urls = re.findall(r'https?://\S+', line)
+            if urls:
+                return urls[0].rstrip('.,)>"\'')
+    return ''
+
+
+def _try_download_resume(url, timeout=10):
+    """Best-effort: GET the URL and return (filename, bytes, content_type)
+    if it looks like a PDF/DOC/DOCX. Returns None for HTML / login pages /
+    timeouts / unrecognised types — the caller treats this as 'no resume'.
+    """
+    if not url:
+        return None
+    try:
+        import requests as _rq
+        resp = _rq.get(url, timeout=timeout, allow_redirects=True,
+                       headers={'User-Agent': 'Mozilla/5.0 TransCrypts-ResumeDB'})
+    except Exception:
+        return None
+    if resp.status_code != 200 or not resp.content:
+        return None
+    ctype = (resp.headers.get('Content-Type') or '').split(';', 1)[0].strip().lower()
+    if ctype in ('application/pdf',):
+        ext = 'pdf'
+    elif ctype in ('application/msword',):
+        ext = 'doc'
+    elif ctype in ('application/vnd.openxmlformats-officedocument.wordprocessingml.document',):
+        ext = 'docx'
+    else:
+        # Sniff the first bytes — Indeed sometimes serves PDFs as
+        # application/octet-stream.
+        head = resp.content[:8]
+        if head.startswith(b'%PDF'):
+            ext = 'pdf'
+        elif head.startswith(b'PK\x03\x04'):
+            # DOCX is a ZIP. Could also be XLSX/PPTX, but for an Indeed
+            # resume link it's overwhelmingly DOCX.
+            ext = 'docx'
+        else:
+            return None
+    # Try to recover the candidate filename from Content-Disposition
+    cd = resp.headers.get('Content-Disposition') or ''
+    fn_match = re.search(r'filename\*?=(?:UTF-8\'\')?["\']?([^;"\']+)', cd)
+    if fn_match:
+        filename = fn_match.group(1).strip()
+        if not filename.lower().endswith('.' + ext):
+            filename = filename.rsplit('.', 1)[0] + '.' + ext
+    else:
+        filename = f'IndeedResume.{ext}'
+    return (filename, resp.content, ctype or f'application/{ext}')
+
+
+def _ingest_indeed_email(msg, settings):
+    """Process a single email.Message and either create or dedupe an
+    applicant. Returns one of: 'created', 'duplicate', 'error:<reason>'.
+    """
+    from email.header import decode_header, make_header
+    try:
+        subject_raw = msg.get('Subject') or ''
+        try:
+            subject = str(make_header(decode_header(subject_raw)))
+        except Exception:
+            subject = subject_raw
+
+        text_body, html_body, attachments, reply_to_email = \
+            _extract_indeed_email_content(msg)
+        fields = _parse_indeed_email_fields(subject, text_body, html_body, reply_to_email)
+        cand_name     = fields['name']
+        cand_email    = fields['email']
+        cand_phone    = fields['phone']
+        cand_position = fields['position']
+
+        # ── Resume file ──────────────────────────────────────────────────────
+        resume_filename = None
+        file_hash = None
+        text_hash = None
+        parsed_text = None
+        parsed = {}
+        resume_note = ''
+
+        chosen = None
+        if attachments:
+            chosen = attachments[0]                # (name, bytes, ctype)
+        else:
+            link = _find_indeed_resume_link(text_body, html_body)
+            if link:
+                chosen = _try_download_resume(link, timeout=10)
+                if not chosen:
+                    resume_note = ('Resume only available in Indeed dashboard '
+                                   '— log in to download.')
+            else:
+                resume_note = ('Resume only available in Indeed dashboard '
+                               '— log in to download.')
+
+        if chosen:
+            attach_name, raw_bytes, ctype = chosen
+            # Compute hashes
+            try:
+                file_hash = hashlib.sha256(raw_bytes).hexdigest()
+            except Exception:
+                file_hash = None
+            try:
+                text_hash = compute_text_hash(raw_bytes, attach_name)
+            except Exception:
+                text_hash = None
+            try:
+                parsed = parse_resume_bytes(raw_bytes, attach_name) or {}
+            except Exception:
+                parsed = {}
+            try:
+                _txt = _extract_text_from_file(raw_bytes, (attach_name or '').lower())
+                if _txt and _txt.strip():
+                    parsed_text = _txt
+            except Exception:
+                parsed_text = None
+
+            # Save the file using the existing storage abstraction
+            try:
+                resume_filename = make_unique_filename(attach_name or 'IndeedResume.pdf')
+                _storage.save_file(resume_filename, raw_bytes,
+                                   ctype or 'application/octet-stream')
+            except Exception as e:
+                resume_filename = None
+                resume_note = (resume_note + ' ' if resume_note else '') + \
+                              f'(Failed to save attachment: {type(e).__name__})'
+
+        # ── Identity match (prefer parsed-from-resume identity) ──────────────
+        effective_name  = (parsed.get('name')  or '').strip() or cand_name
+        effective_email = (parsed.get('email') or '').strip() or cand_email
+        effective_phone = (parsed.get('phone') or '').strip() or cand_phone
+
+        match = find_identity_match(name=effective_name, email=effective_email,
+                                    phone=effective_phone)
+        if match:
+            # Update applied_position on the existing record if the email
+            # mentions a different position than what we already track.
+            try:
+                with get_db() as conn:
+                    row = conn.execute(
+                        'SELECT applied_position FROM applicants WHERE id=?',
+                        (match['id'],)
+                    ).fetchone()
+                    old_pos = (row['applied_position'] if row else '') or ''
+                    if cand_position and cand_position.lower() not in old_pos.lower():
+                        new_pos = (old_pos + ' | ' + cand_position).strip(' |') \
+                                  if old_pos else cand_position
+                        conn.execute(
+                            'UPDATE applicants SET applied_position=? WHERE id=?',
+                            (new_pos, match['id'])
+                        )
+                        conn.commit()
+            except Exception:
+                pass
+            log_action('INDEED INGEST (DUP)', effective_name or cand_name or '(unknown)',
+                       f'Already on file as id={match["id"]}. '
+                       f'Position: {cand_position}')
+            return 'duplicate'
+
+        # ── Build the row ───────────────────────────────────────────────────
+        final_name = effective_name or 'Indeed Applicant'
+        final_specialty = (parsed.get('specialty') or '').strip() or \
+                          (cand_position or 'Indeed Application')
+        years   = _safe_int(parsed.get('years_experience'), 0)
+        edu     = (parsed.get('highest_education') or '').strip()
+        skills  = (parsed.get('skills') or '').strip()
+        notes_parts = []
+        if parsed.get('notes'):
+            notes_parts.append(parsed['notes'])
+        if resume_note:
+            notes_parts.append(resume_note)
+        notes_combined = '\n\n'.join(notes_parts)
+        linkedin = (parsed.get('linkedin_url') or '').strip()
+        github   = (parsed.get('github_url')   or '').strip()
+
+        with get_db() as conn:
+            conn.execute(
+                '''INSERT INTO applicants
+                   (name, email, phone, specialty, years_experience,
+                    highest_education, skills, resume_filename, notes,
+                    date_added, hiring_status, linkedin_url, github_url,
+                    file_hash, text_hash, source, applied_position,
+                    parsed_text)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (
+                    final_name,
+                    effective_email,
+                    effective_phone,
+                    final_specialty,
+                    years,
+                    edu,
+                    skills,
+                    resume_filename,
+                    notes_combined,
+                    datetime.now().isoformat(timespec='seconds'),
+                    'Under Review',
+                    linkedin,
+                    github,
+                    file_hash,
+                    text_hash,
+                    'Indeed',
+                    cand_position,
+                    parsed_text,
+                )
+            )
+            conn.commit()
+        log_action('INDEED INGEST', final_name,
+                   f'Position: {cand_position}'
+                   + (' | no resume file' if not resume_filename else ''))
+        return 'created'
+    except Exception as e:
+        return f'error:{type(e).__name__}: {str(e)[:200]}'
+
+
+def _upsert_indeed_poll_status(processed, created, duplicates, errors_text):
+    """Write the latest poll outcome into the single-row status table."""
+    try:
+        ts = datetime.now().isoformat(timespec='seconds')
+        with get_db() as conn:
+            # Single row with id=1 — try UPDATE, then INSERT if no row exists.
+            cur = conn.execute(
+                'UPDATE indeed_poll_status SET last_run=?, processed=?, '
+                'created=?, duplicates=?, errors=? WHERE id=1',
+                (ts, processed, created, duplicates, errors_text)
+            )
+            affected = getattr(cur, 'rowcount', 0) or 0
+            if not affected:
+                conn.execute(
+                    'INSERT INTO indeed_poll_status '
+                    '(id, last_run, processed, created, duplicates, errors) '
+                    'VALUES (1, ?, ?, ?, ?, ?)',
+                    (ts, processed, created, duplicates, errors_text)
+                )
+            conn.commit()
+    except Exception:
+        pass
+
+
+def _get_indeed_poll_status():
+    """Return the single status row as a dict, or None if no poll has run yet."""
+    try:
+        with get_db() as conn:
+            row = conn.execute(
+                'SELECT last_run, processed, created, duplicates, errors '
+                'FROM indeed_poll_status WHERE id=1'
+            ).fetchone()
+            if not row:
+                return None
+            return dict(row) if not isinstance(row, dict) else row
+    except Exception:
+        return None
+
+
+def _run_indeed_poll(settings):
+    """Connect to the configured IMAP mailbox, ingest UNSEEN messages from
+    the allowed sender domains, mark them as Seen, and return a result dict.
+
+    On any unexpected error (auth failure, network, etc.) returns
+    {ok: False, error: '…'} without raising.
+    """
+    import imaplib, email as _emaillib
+    result = {
+        'ok':         True,
+        'processed':  0,
+        'created':    0,
+        'duplicates': 0,
+        'errors':     [],
+        'last_run':   datetime.now().isoformat(timespec='seconds'),
+    }
+    M = None
+    try:
+        if settings['use_ssl']:
+            M = imaplib.IMAP4_SSL(settings['host'], settings['port'], timeout=20)
+        else:
+            M = imaplib.IMAP4(settings['host'], settings['port'], timeout=20)
+            try:
+                M.starttls()
+            except Exception:
+                # Some servers (Proton Bridge plaintext on 143) don't offer STARTTLS
+                pass
+        M.login(settings['user'], settings['password'])
+        M.select(settings['folder'])
+
+        # Build an IMAP search query — unseen messages whose From contains
+        # any allowed Indeed domain. IMAP can OR multiple FROM filters.
+        domains = list(settings['sender_domains']) or ['indeed.com']
+        # Search per-domain and union the result UIDs; some servers don't
+        # like deeply-nested OR queries, so this is safer.
+        uid_set = set()
+        for dom in domains:
+            try:
+                typ, data = M.uid('search', None, 'UNSEEN', 'FROM', f'"{dom}"')
+                if typ == 'OK' and data and data[0]:
+                    for uid in data[0].split():
+                        uid_set.add(uid)
+            except Exception as e:
+                result['errors'].append(f'Search failed for {dom}: {type(e).__name__}')
+
+        for uid in sorted(uid_set):
+            try:
+                typ, data = M.uid('fetch', uid, '(RFC822)')
+                if typ != 'OK' or not data or not data[0]:
+                    result['errors'].append(f'Fetch failed for UID {uid.decode() if isinstance(uid, bytes) else uid}')
+                    continue
+                raw = data[0][1]
+                msg = _emaillib.message_from_bytes(raw)
+                outcome = _ingest_indeed_email(msg, settings)
+                result['processed'] += 1
+                if outcome == 'created':
+                    result['created'] += 1
+                elif outcome == 'duplicate':
+                    result['duplicates'] += 1
+                elif outcome.startswith('error:'):
+                    result['errors'].append(outcome[6:])
+            except Exception as e:
+                result['errors'].append(f'UID {uid}: {type(e).__name__}: {str(e)[:120]}')
+            finally:
+                # Always mark as Seen so a poison message doesn't get retried
+                # forever. The audit log preserves the per-message outcome.
+                try:
+                    M.uid('store', uid, '+FLAGS', '\\Seen')
+                except Exception:
+                    pass
+    except Exception as e:
+        result['ok']    = False
+        result['error'] = f'{type(e).__name__}: {str(e)[:200]}'
+    finally:
+        if M is not None:
+            try: M.close()
+            except Exception: pass
+            try: M.logout()
+            except Exception: pass
+
+    # Persist the outcome
+    err_text = '; '.join(result['errors'])[:2000] if result['errors'] else ''
+    if not result.get('ok') and result.get('error'):
+        err_text = (err_text + ' | ' if err_text else '') + result['error']
+    _upsert_indeed_poll_status(result['processed'], result['created'],
+                                result['duplicates'], err_text)
+    return result
+
+
+def _valid_indeed_token(provided, expected):
+    """Constant-time token comparison. Empty / mismatched tokens reject."""
+    if not expected or not provided:
+        return False
+    try:
+        return hmac.compare_digest(str(provided), str(expected))
+    except Exception:
+        return False
+
+
+@app.route('/admin/poll-indeed', methods=['GET', 'POST'])
+def admin_poll_indeed():
+    """Public endpoint hit by an external cron service. Token-protected so
+    it can be called without an authenticated session. GET is allowed as an
+    alias so simple URL pingers (cron-job.org) work."""
+    token = request.args.get('token') or request.form.get('token') or ''
+    settings = _indeed_settings()
+    if not _valid_indeed_token(token, settings['cron_token']):
+        return jsonify({'ok': False, 'error': 'Invalid or missing token.'}), 401
+    if not settings['is_configured']:
+        return jsonify({
+            'ok':       False,
+            'error':    'Indeed inbox not configured.',
+            'missing':  settings['missing'],
+        }), 503
+    if not settings['password']:
+        return jsonify({
+            'ok':       False,
+            'error':    'INDEED_IMAP_PASSWORD is not set.',
+        }), 503
+    result = _run_indeed_poll(settings)
+    return jsonify(result), (200 if result.get('ok') else 502)
+
+
+@app.route('/admin/poll-indeed/manual', methods=['POST'])
+@role_required(*CAN_USERS)
+def admin_poll_indeed_manual():
+    """Admin-only 'Poll Now' button on the Indeed inbox page. Uses the
+    logged-in session for auth so the user doesn't have to handle the
+    cron token in the browser."""
+    settings = _indeed_settings()
+    if not settings['is_configured']:
+        flash('Indeed inbox is not configured — set INDEED_IMAP_HOST and '
+              'INDEED_IMAP_USER on the host first.', 'error')
+        return redirect(url_for('admin_indeed_inbox'))
+    if not settings['password']:
+        flash('INDEED_IMAP_PASSWORD is missing. Set it on the host and '
+              'redeploy before polling.', 'error')
+        return redirect(url_for('admin_indeed_inbox'))
+    result = _run_indeed_poll(settings)
+    if result.get('ok'):
+        flash(
+            f'Poll complete — processed {result["processed"]}, '
+            f'created {result["created"]}, duplicates {result["duplicates"]}'
+            + (f', errors: {len(result["errors"])}' if result.get('errors') else ''),
+            'success'
+        )
+    else:
+        flash(f'Poll failed: {result.get("error", "unknown error")}', 'error')
+    return redirect(url_for('admin_indeed_inbox'))
+
+
+@app.route('/admin/indeed-inbox')
+@role_required(*CAN_USERS)
+def admin_indeed_inbox():
+    """Admin page: shows config status, last-run stats, and recent Indeed
+    applicants. Never exposes IMAP credentials."""
+    settings = _indeed_settings()
+    status = _get_indeed_poll_status()
+
+    recent = []
+    try:
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT id, name, email, applied_position, date_added "
+                "FROM applicants "
+                "WHERE COALESCE(source, '') = 'Indeed' "
+                "ORDER BY date_added DESC, id DESC LIMIT 20"
+            ).fetchall()
+            recent = [dict(r) for r in rows]
+    except Exception:
+        recent = []
+
+    # Build the cron URL the user copy-pastes into cron-job.org. Use the
+    # incoming request's host so it works in both local and production.
+    cron_url = ''
+    if settings['cron_token']:
+        cron_url = (request.url_root.rstrip('/')
+                    + url_for('admin_poll_indeed')
+                    + f'?token={settings["cron_token"]}')
+
+    # Don't echo the token back into a publicly-visible place — only show it
+    # via the cron URL, which the admin uses once and stores in cron-job.org.
+    return render_template(
+        'indeed_inbox.html',
+        configured       = settings['is_configured'],
+        poll_ready       = settings['is_poll_ready'],
+        missing          = settings['missing_for_poll'],
+        imap_host        = settings['host'],
+        imap_user        = settings['user'],
+        imap_folder      = settings['folder'],
+        imap_port        = settings['port'],
+        imap_ssl         = settings['use_ssl'],
+        sender_domains   = ', '.join(settings['sender_domains']),
+        status           = status,
+        recent           = recent,
+        cron_url         = cron_url,
+        has_token        = bool(settings['cron_token']),
+    )
 
 
 @app.route('/shutdown', methods=['POST'])
