@@ -387,6 +387,12 @@ def init_db():
             # from a different tool. file_hash catches byte-identical files;
             # text_hash catches content-identical ones.
             ('text_hash',         'TEXT'),
+            # parsed_text = full plain-text extracted from the resume file.
+            # Stored once so the "Find Best Matches" job-matcher can search
+            # without re-reading + re-extracting every file on every query.
+            # Populated lazily on the first /match-job visit and on every new
+            # upload that already runs text extraction.
+            ('parsed_text',       'TEXT'),
             # ── Career-website integration ────────────────────────────────────
             ('source',            "TEXT DEFAULT 'Manual Entry'"),
             ('applied_position',  'TEXT'),
@@ -659,6 +665,149 @@ def parse_resume_bytes(raw_bytes, filename):
     except Exception:
         pass
     return {}
+
+
+# ─── Job-matching helpers ─────────────────────────────────────────────────────
+# A small hard-coded English stopword set used by the keyword pre-filter
+# in `/match-job`. Deliberately minimal — no NLTK / sklearn dependency.
+_MATCH_STOPWORDS = {
+    'the','a','an','and','or','but','if','then','else','of','in','on','at','to',
+    'for','with','from','by','as','is','are','was','were','be','been','being',
+    'have','has','had','do','does','did','will','would','could','should','may',
+    'might','can','this','that','these','those','it','its','we','you','they',
+    'i','our','your','their','his','her','him','them','us','me','my','mine',
+    'who','what','which','when','where','why','how','not','no','nor','so','too',
+    'very','just','also','about','into','than','because','while','during',
+    'over','under','up','down','out','off','more','most','some','any','all',
+    'each','every','other','another','same','such','only','own','here','there',
+    'job','role','position','candidate','candidates','required','requirements',
+    'responsibility','responsibilities','must','will','should','need','needs',
+    'work','working','team','please','etc',
+}
+
+
+def _tokenize_job_description(text):
+    """Lowercase, split on non-alphanumerics, drop stopwords + short tokens.
+    Returns a deduplicated list of keyword tokens used for the cheap
+    keyword-overlap pre-filter in /match-job."""
+    if not text:
+        return []
+    import re as _re
+    seen = set()
+    tokens = []
+    for raw in _re.split(r'[^a-zA-Z0-9+#.]+', text.lower()):
+        tok = raw.strip('.+#')
+        if not tok or len(tok) < 3:
+            continue
+        if tok in _MATCH_STOPWORDS:
+            continue
+        if tok in seen:
+            continue
+        seen.add(tok)
+        tokens.append(tok)
+    return tokens
+
+
+def _score_applicant_keywords(applicant, tokens):
+    """Cheap weighted keyword overlap score. Higher = better match."""
+    if not tokens:
+        return 0
+    skills_blob    = (applicant.get('skills')      or '').lower()
+    specialty_blob = (applicant.get('specialty')   or '').lower()
+    parsed_blob    = (applicant.get('parsed_text') or '').lower()
+    score = 0
+    for tok in tokens:
+        if tok in skills_blob:
+            score += 3
+        if tok in specialty_blob:
+            score += 2
+        if tok in parsed_blob:
+            score += 1
+    return score
+
+
+def _ai_rerank_candidates(job_description, shortlist):
+    """Ask Claude to re-rank up to 30 candidates and return top 10.
+
+    Returns: (results_list, error_message)
+      • results_list = [{'id', 'score', 'reasoning'}, ...]  ordered best-first
+      • error_message = None on success, else short human-readable warning
+    """
+    if not shortlist:
+        return [], None
+    if not ANTHROPIC_API_KEY:
+        return [], 'AI rerank is disabled (no Anthropic API key configured) — showing keyword matches only.'
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+        # Build a compact candidate payload. Keep it small — 30 candidates
+        # × ~600 chars each ≈ 18 KB, well within token budget.
+        payload = []
+        for a in shortlist:
+            snippet = (a.get('parsed_text') or '')[:500]
+            payload.append({
+                'id':                a['id'],
+                'name':              a.get('name') or '',
+                'specialty':         a.get('specialty') or '',
+                'years_experience':  a.get('years_experience') or 0,
+                'highest_education': a.get('highest_education') or '',
+                'skills':            a.get('skills') or '',
+                'snippet':           snippet,
+            })
+
+        system_prompt = (
+            "You are an expert technical recruiter. Given a job description and a "
+            "JSON list of candidates, rank the candidates by how well they fit the "
+            "job. Return ONLY a JSON array — no prose, no markdown, no code fences. "
+            "Each element must be exactly: "
+            '{"id": <integer>, "score": <0-100 integer>, "reasoning": "<1-2 short sentences>"}. '
+            "Order best-first. Return at most 10 items. Score reflects overall fit: "
+            "skills match, experience level, education, and specialty relevance."
+        )
+
+        user_prompt = (
+            f"JOB DESCRIPTION:\n{job_description}\n\n"
+            f"CANDIDATES (JSON):\n{json.dumps(payload, ensure_ascii=False)}\n\n"
+            "Return the ranked JSON array now."
+        )
+
+        message = client.messages.create(
+            model='claude-haiku-4-5-20251001',
+            max_tokens=2000,
+            system=system_prompt,
+            messages=[{'role': 'user', 'content': user_prompt}],
+        )
+        raw = (message.content[0].text or '').strip()
+        # Strip ``` fences if Claude adds them despite the instruction
+        if raw.startswith('```'):
+            raw = raw.split('```', 2)[1] if '```' in raw[3:] else raw[3:]
+            if raw.startswith('json'):
+                raw = raw[4:]
+            raw = raw.strip().rstrip('`').strip()
+
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list):
+            return [], 'AI rerank returned an unexpected format — showing keyword matches only.'
+
+        cleaned = []
+        for item in parsed[:10]:
+            if not isinstance(item, dict):
+                continue
+            try:
+                cid = int(item.get('id'))
+                cscore = int(item.get('score', 0))
+            except (TypeError, ValueError):
+                continue
+            cscore = max(0, min(100, cscore))
+            reasoning = str(item.get('reasoning') or '').strip()[:600]
+            cleaned.append({'id': cid, 'score': cscore, 'reasoning': reasoning})
+        if not cleaned:
+            return [], 'AI rerank returned no valid items — showing keyword matches only.'
+        return cleaned, None
+    except Exception as e:
+        return [], f'AI rerank unavailable ({type(e).__name__}). Showing keyword matches only.'
 
 
 def find_identity_match(name='', email='', phone='', exclude_id=None):
@@ -1246,6 +1395,196 @@ def index():
     )
 
 
+@app.route('/match-job', methods=['GET', 'POST'])
+@role_required(*CAN_VIEW)
+def match_job():
+    """Find Best Matching Candidates — paste a JD, get the top 10 ranked.
+
+    Pipeline:
+      1. Lazily backfill parsed_text for up to 50 resumes per request so
+         the keyword search can run cheaply.
+      2. Tokenize the JD, score every applicant by weighted keyword overlap.
+      3. Pass the top 30 to Claude for a structured rerank (one API call).
+      4. Render the page with the top 10 results + scores + reasoning.
+    """
+    # ── 1. Lazy backfill of parsed_text (cap at 50 files per request) ──────
+    BACKFILL_BUDGET     = 50
+    indexed_this_visit  = 0
+    pending_after_visit = 0
+
+    with get_db() as conn:
+        pending_rows = conn.execute(
+            "SELECT id, resume_filename FROM applicants "
+            "WHERE (parsed_text IS NULL OR parsed_text = '') "
+            "  AND resume_filename IS NOT NULL "
+            "  AND resume_filename != ''"
+        ).fetchall()
+
+    pending_total = len(pending_rows)
+    for r in pending_rows[:BACKFILL_BUDGET]:
+        try:
+            data = _storage.read_file(r['resume_filename'])
+            if not data:
+                continue
+            text = _extract_text_from_file(data, (r['resume_filename'] or '').lower())
+            if not text or not text.strip():
+                continue
+            with get_db() as conn:
+                conn.execute('UPDATE applicants SET parsed_text=? WHERE id=?',
+                             (text, r['id']))
+                conn.commit()
+            indexed_this_visit += 1
+        except Exception:
+            # Extraction failed — leave parsed_text NULL so a later request
+            # can retry. Don't bubble the error to the user.
+            pass
+
+    pending_after_visit = max(0, pending_total - indexed_this_visit)
+
+    backfill_status = None
+    if pending_total > 0:
+        if pending_after_visit == 0:
+            backfill_status = f"Indexed {indexed_this_visit} resume(s) for fast search — all caught up."
+        else:
+            # Show "Indexed X of Y" so HR knows the rest will catch up on subsequent visits
+            total_for_msg = pending_total
+            shown = indexed_this_visit
+            with get_db() as conn:
+                total_with_text = conn.execute(
+                    "SELECT COUNT(*) FROM applicants "
+                    "WHERE parsed_text IS NOT NULL AND parsed_text != ''"
+                ).fetchone()[0]
+                total_with_files = conn.execute(
+                    "SELECT COUNT(*) FROM applicants "
+                    "WHERE resume_filename IS NOT NULL AND resume_filename != ''"
+                ).fetchone()[0]
+            backfill_status = (
+                f"Indexed {total_with_text} of {total_with_files} resumes for fast "
+                f"search ({pending_after_visit} still pending — they'll be picked "
+                f"up on future searches)."
+            )
+
+    # ── GET request: just show the empty form ──────────────────────────────
+    if request.method == 'GET':
+        return render_template(
+            'match_job.html',
+            jd_text='',
+            results=[],
+            warning=None,
+            backfill_status=backfill_status,
+            searched=False,
+        )
+
+    # ── POST request: validate + run the match ─────────────────────────────
+    jd_text = (request.form.get('jd_text') or '').strip()
+    if len(jd_text) < 20:
+        flash('Please paste a job description of at least 20 characters.', 'error')
+        return render_template(
+            'match_job.html',
+            jd_text=jd_text,
+            results=[],
+            warning=None,
+            backfill_status=backfill_status,
+            searched=False,
+        )
+
+    # ── Stage 1: Keyword pre-filter ────────────────────────────────────────
+    tokens = _tokenize_job_description(jd_text)
+
+    with get_db() as conn:
+        all_applicants = conn.execute(
+            'SELECT id, name, email, specialty, years_experience, '
+            'highest_education, skills, resume_filename, parsed_text '
+            'FROM applicants'
+        ).fetchall()
+
+    scored = []
+    for row in all_applicants:
+        applicant = dict(row)
+        kscore = _score_applicant_keywords(applicant, tokens)
+        if kscore <= 0:
+            continue
+        applicant['_keyword_score'] = kscore
+        scored.append(applicant)
+
+    scored.sort(key=lambda a: a['_keyword_score'], reverse=True)
+    shortlist = scored[:30]
+
+    warning = None
+    results = []
+
+    if not shortlist:
+        # No keyword overlap at all — empty state will be rendered.
+        log_action('JOB MATCH', '',
+                   f'JD chars={len(jd_text)} | applicants={len(all_applicants)} | matches=0')
+        return render_template(
+            'match_job.html',
+            jd_text=jd_text,
+            results=[],
+            warning=None,
+            backfill_status=backfill_status,
+            searched=True,
+        )
+
+    # ── Stage 2: Claude rerank (or graceful fallback) ──────────────────────
+    rerank, ai_error = _ai_rerank_candidates(jd_text, shortlist)
+
+    by_id = {a['id']: a for a in shortlist}
+
+    if rerank:
+        # Use Claude's order + score + reasoning
+        for item in rerank:
+            applicant = by_id.get(item['id'])
+            if not applicant:
+                continue
+            results.append({
+                'id':                applicant['id'],
+                'name':              applicant.get('name') or '—',
+                'specialty':         applicant.get('specialty') or '',
+                'years_experience':  applicant.get('years_experience') or 0,
+                'highest_education': applicant.get('highest_education') or '',
+                'skills':            applicant.get('skills') or '',
+                'has_file':          bool(applicant.get('resume_filename')),
+                'score':             item['score'],
+                'reasoning':         item['reasoning'] or 'Matches several keywords from the job description.',
+            })
+        if ai_error:
+            warning = ai_error
+    else:
+        # Fall back to keyword ranking; normalize the raw score to 0–100.
+        warning = ai_error or 'AI rerank unavailable — showing keyword matches only.'
+        top_score = shortlist[0]['_keyword_score'] or 1
+        for applicant in shortlist[:10]:
+            kscore = applicant['_keyword_score']
+            norm = int(round(100 * kscore / top_score))
+            norm = max(1, min(100, norm))
+            results.append({
+                'id':                applicant['id'],
+                'name':              applicant.get('name') or '—',
+                'specialty':         applicant.get('specialty') or '',
+                'years_experience':  applicant.get('years_experience') or 0,
+                'highest_education': applicant.get('highest_education') or '',
+                'skills':            applicant.get('skills') or '',
+                'has_file':          bool(applicant.get('resume_filename')),
+                'score':             norm,
+                'reasoning':         (f'Matched {kscore} weighted keyword(s) '
+                                      f'across skills, specialty and resume text.'),
+            })
+
+    log_action('JOB MATCH', '',
+               f'JD chars={len(jd_text)} | shortlist={len(shortlist)} | '
+               f'returned={len(results)}' + (' | ai_fallback' if warning else ''))
+
+    return render_template(
+        'match_job.html',
+        jd_text=jd_text,
+        results=results,
+        warning=warning,
+        backfill_status=backfill_status,
+        searched=True,
+    )
+
+
 @app.route('/add', methods=['GET', 'POST'])
 @role_required(*CAN_ADD)
 def add_resume():
@@ -1327,6 +1666,16 @@ def add_resume():
             # to whatever is already stored so we never blank-out a field
             parsed = _parse_saved_file(new_filename) or {}
 
+            # Extract full plain text so the job-matcher can search it later.
+            # Falls back to NULL on any failure — match-job will lazy-fill it.
+            new_parsed_text = None
+            try:
+                _txt = _extract_text_from_file(_file_bytes, (file.filename or '').lower())
+                if _txt and _txt.strip():
+                    new_parsed_text = _txt
+            except Exception:
+                new_parsed_text = None
+
             def _pick(pv, ev):
                 v = str(pv).strip() if pv is not None else ''
                 return v if v else (ev or '')
@@ -1335,12 +1684,14 @@ def add_resume():
                 conn.execute('''
                     UPDATE applicants
                        SET resume_filename=?, file_hash=?, text_hash=?,
+                           parsed_text=?,
                            name=?, email=?, phone=?,
                            specialty=?, years_experience=?,
                            highest_education=?, skills=?
                      WHERE id=?
                 ''', (
                     new_filename, new_hash, new_text_hash,
+                    new_parsed_text,
                     _pick(parsed.get('name'),              existing['name']),
                     _pick(parsed.get('email'),             existing['email']),
                     _pick(parsed.get('phone'),             existing['phone']),
@@ -1423,6 +1774,7 @@ def add_resume():
         resume_filename = None
         file_hash       = None
         text_hash       = None
+        parsed_text     = None
         file = request.files.get('resume_file')
         if file and file.filename:
             if allowed_file(file.filename):
@@ -1489,6 +1841,14 @@ def add_resume():
                 resume_filename = make_unique_filename(file.filename)
                 _storage.save_file(resume_filename, _file_bytes,
                                    file.mimetype or 'application/octet-stream')
+
+                # Cache the extracted plain text for the job-matcher.
+                try:
+                    _txt = _extract_text_from_file(_file_bytes, file.filename.lower())
+                    if _txt and _txt.strip():
+                        parsed_text = _txt
+                except Exception:
+                    parsed_text = None
             else:
                 flash('Only PDF, DOC, and DOCX files are allowed.', 'error')
                 return render_template('add_resume.html', form=request.form)
@@ -1498,11 +1858,13 @@ def add_resume():
                 INSERT INTO applicants
                     (name, email, phone, linkedin_url, github_url,
                      specialty, years_experience, highest_education,
-                     skills, resume_filename, notes, file_hash, text_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     skills, resume_filename, notes, file_hash, text_hash,
+                     parsed_text)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (name, email, phone, linkedin_url, github_url,
                   specialty, years_experience, highest_education,
-                  skills, resume_filename, notes, file_hash, text_hash))
+                  skills, resume_filename, notes, file_hash, text_hash,
+                  parsed_text))
             conn.commit()
 
         flash(f'✓ Resume for {name} has been added successfully!', 'success')
@@ -1617,6 +1979,15 @@ def add_bulk():
             name        = parsed_name or stem_name or 'Please Edit Name'
             specialty   = (parsed.get('specialty') or '').strip() or 'General'
 
+            # Cache the full text for the job-matcher.
+            bulk_parsed_text = None
+            try:
+                _txt = _extract_text_from_file(_file_bytes, file.filename.lower())
+                if _txt and _txt.strip():
+                    bulk_parsed_text = _txt
+            except Exception:
+                bulk_parsed_text = None
+
             try:
                 with get_db() as conn:
                     conn.execute('''
@@ -1624,8 +1995,8 @@ def add_bulk():
                             (name, email, phone, linkedin_url, github_url,
                              specialty, years_experience,
                              highest_education, skills, resume_filename,
-                             file_hash, text_hash)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             file_hash, text_hash, parsed_text)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (name,
                           (parsed.get('email') or '').strip(),
                           (parsed.get('phone') or '').strip(),
@@ -1636,7 +2007,7 @@ def add_bulk():
                           (parsed.get('highest_education') or '').strip(),
                           (parsed.get('skills') or '').strip(),
                           filename,
-                          fhash, thash))
+                          fhash, thash, bulk_parsed_text))
                     conn.commit()
                 added.append({'name': name, 'filename': file.filename})
                 log_action('RESUME ADDED', name, f'Bulk upload — {file.filename}')
@@ -1731,6 +2102,11 @@ def edit_resume(applicant_id):
             new_text_hash = applicant['text_hash']
         except (KeyError, IndexError):
             new_text_hash = None
+        # parsed_text may also be missing on old rows; keep existing unless replaced
+        try:
+            new_parsed_text = applicant['parsed_text']
+        except (KeyError, IndexError):
+            new_parsed_text = None
         file = request.files.get('resume_file')
         if file and file.filename:
             if allowed_file(file.filename):
@@ -1774,6 +2150,13 @@ def edit_resume(applicant_id):
                 resume_filename = make_unique_filename(file.filename)
                 _storage.save_file(resume_filename, _file_bytes,
                                    file.mimetype or 'application/octet-stream')
+
+                # Re-extract full text for the job-matcher.
+                try:
+                    _txt = _extract_text_from_file(_file_bytes, file.filename.lower())
+                    new_parsed_text = _txt if (_txt and _txt.strip()) else None
+                except Exception:
+                    new_parsed_text = None
             else:
                 flash('Only PDF, DOC, and DOCX files are allowed.', 'error')
                 return render_template('edit_resume.html', applicant=applicant)
@@ -1785,6 +2168,7 @@ def edit_resume(applicant_id):
             resume_filename  = None
             new_file_hash    = None
             new_text_hash    = None
+            new_parsed_text  = None
 
         with get_db() as conn:
             conn.execute('''
@@ -1792,12 +2176,12 @@ def edit_resume(applicant_id):
                 SET name=?, email=?, phone=?, linkedin_url=?, github_url=?,
                     specialty=?, years_experience=?, highest_education=?,
                     skills=?, resume_filename=?, notes=?,
-                    file_hash=?, text_hash=?
+                    file_hash=?, text_hash=?, parsed_text=?
                 WHERE id=?
             ''', (name, email, phone, linkedin_url, github_url,
                   specialty, years_experience, highest_education,
                   skills, resume_filename, notes,
-                  new_file_hash, new_text_hash, applicant_id))
+                  new_file_hash, new_text_hash, new_parsed_text, applicant_id))
             conn.commit()
 
         edit_notes = request.form.get('edit_notes', '').strip()
@@ -3945,10 +4329,12 @@ def api_careers_apply():
 
     # ── Parse resume FIRST — its content drives identity & dedup ────────────
     parsed = {}
+    parsed_text_value = None
     try:
         text = _extract_text_from_file(raw, final_name.lower())
         if text and text.strip():
             parsed = _smart_parse(text) or {}
+            parsed_text_value = text   # cache full text for the job-matcher
     except Exception:
         parsed = {}
 
@@ -4102,8 +4488,8 @@ def api_careers_apply():
                (name, email, phone, specialty, years_experience, highest_education,
                 skills, resume_filename, notes, date_added, hiring_status,
                 linkedin_url, github_url, file_hash, text_hash, source,
-                applied_position, cover_letter)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                applied_position, cover_letter, parsed_text)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (
                 name, email, phone,
                 parsed.get('specialty', position or ''),
@@ -4121,6 +4507,7 @@ def api_careers_apply():
                 source_label,
                 position_label,
                 cover_letter,
+                parsed_text_value,
             )
         )
         applicant_id = cur.lastrowid
@@ -4288,6 +4675,9 @@ def admin_cleanup_content_duplicates():
     want_json  = (request.args.get('format') or '').strip().lower() == 'json'
 
     # ── 1. Backfill missing text_hash values ────────────────────────────────
+    # We also opportunistically backfill parsed_text from the SAME extraction
+    # pass so the job-matcher gets the cached text "for free" — saving a
+    # repeat extraction later.
     backfilled = 0
     skipped    = 0
     with get_db() as conn:
@@ -4304,13 +4694,24 @@ def admin_cleanup_content_duplicates():
             if not data:
                 skipped += 1
                 continue
-            th = compute_text_hash(data, r['resume_filename'])
+            # Extract once, derive both text_hash and parsed_text from it.
+            try:
+                full_text = _extract_text_from_file(data, (r['resume_filename'] or '').lower())
+            except Exception:
+                full_text = ''
+            th = ''
+            if full_text:
+                norm = _normalize_resume_text(full_text)
+                if norm and len(norm) >= 50:
+                    th = hashlib.md5(norm.encode('utf-8')).hexdigest()
             if not th:
                 skipped += 1
                 continue
             with get_db() as conn:
-                conn.execute('UPDATE applicants SET text_hash=? WHERE id=?',
-                             (th, r['id']))
+                conn.execute(
+                    'UPDATE applicants SET text_hash=?, parsed_text=? WHERE id=?',
+                    (th, full_text or None, r['id'])
+                )
                 conn.commit()
             backfilled += 1
         except Exception:

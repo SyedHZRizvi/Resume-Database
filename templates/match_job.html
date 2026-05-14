@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Find Best Matches — Resume Database</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
+  <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet" />
+  <style>
+    .match-card {
+      border-left: 4px solid var(--tc-green, #6DC49A);
+      transition: transform 0.12s ease, box-shadow 0.12s ease;
+    }
+    .match-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
+    }
+    .score-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      font-size: 1.4rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: #fff;
+      box-shadow: inset 0 -2px 6px rgba(0, 0, 0, 0.08);
+    }
+    .score-high   { background: linear-gradient(135deg, #16a34a, #22c55e); }
+    .score-medium { background: linear-gradient(135deg, #ca8a04, #eab308); }
+    .score-low    { background: linear-gradient(135deg, #64748b, #94a3b8); }
+    .score-label  {
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #6b7280;
+      margin-top: 4px;
+    }
+    .pill {
+      display: inline-block;
+      background: #f1f5f9;
+      color: #334155;
+      border: 1px solid #e2e8f0;
+      border-radius: 20px;
+      padding: 3px 10px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      margin-right: 4px;
+      margin-bottom: 4px;
+    }
+    .pill.pill-green {
+      background: #ecfdf5;
+      color: #065f46;
+      border-color: #a7f3d0;
+    }
+    .skill-chip {
+      display: inline-block;
+      background: #eef2ff;
+      color: #3730a3;
+      border: 1px solid #c7d2fe;
+      border-radius: 6px;
+      padding: 2px 8px;
+      font-size: 0.75rem;
+      margin-right: 4px;
+      margin-bottom: 4px;
+    }
+    .skill-chip.more {
+      background: #f1f5f9;
+      color: #64748b;
+      border-color: #e2e8f0;
+      font-style: italic;
+    }
+    .reasoning {
+      background: #f8fafc;
+      border-left: 3px solid #cbd5e1;
+      padding: 10px 14px;
+      border-radius: 4px;
+      color: #475569;
+      font-style: italic;
+      font-size: 0.92rem;
+      margin-top: 8px;
+    }
+    .char-count {
+      font-size: 0.78rem;
+      color: #94a3b8;
+    }
+    .char-count.ok    { color: #16a34a; }
+    .char-count.short { color: #dc2626; }
+    .rank-pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: #1e293b;
+      color: #fff;
+      font-weight: 700;
+      font-size: 0.85rem;
+      margin-right: 8px;
+    }
+    .spinner-overlay {
+      display: none;
+      position: absolute;
+      inset: 0;
+      background: rgba(255, 255, 255, 0.85);
+      align-items: center;
+      justify-content: center;
+      border-radius: 12px;
+      z-index: 5;
+    }
+    .spinner-overlay.show { display: flex; }
+  </style>
+</head>
+<body>
+
+<!-- ── Navbar ─────────────────────────────────────────────────────────────── -->
+<nav class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm">
+  <div class="container-fluid px-4">
+    <a class="navbar-brand tc-logo" href="{{ url_for('index') }}">
+      <span class="tc-logo-icon-wrap">
+        <i class="bi bi-file-earmark-text tc-doc"></i>
+        <span class="tc-check"><i class="bi bi-check-lg"></i></span>
+      </span>
+      <span class="tc-logo-text">
+        <span class="tc-trans">Trans</span><span class="tc-crypts">Crypts</span>
+      </span>
+    </a>
+    <div class="ms-auto d-flex align-items-center gap-2">
+      <a href="{{ url_for('index') }}" class="btn btn-home">
+        <i class="bi bi-house-fill me-1"></i> Home
+      </a>
+      {% if require_login %}
+      <span class="text-white-50 small">
+        <i class="bi bi-person-fill me-1"></i>{{ session.full_name }}
+        <span class="badge bg-warning text-dark ms-1">{{ ROLE_LABEL }}</span>
+      </span>
+      {% endif %}
+    </div>
+  </div>
+</nav>
+
+<div class="container-fluid px-4 py-4" style="max-width: 1100px; margin: 0 auto;">
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}{% for category, message in messages %}
+      <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }} alert-dismissible fade show shadow-sm">
+        <i class="bi bi-{{ 'check-circle-fill' if category == 'success' else 'exclamation-triangle-fill' }} me-2"></i>
+        {{ message }}<button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+      </div>
+    {% endfor %}{% endif %}
+  {% endwith %}
+
+  <!-- Header -->
+  <div class="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-2">
+    <div>
+      <h4 class="fw-bold mb-1">
+        <i class="bi bi-stars text-success me-2"></i>Find Best Matching Candidates
+      </h4>
+      <p class="text-muted mb-0 small">
+        Paste a job description and we'll rank every resume on file by how well it fits.
+      </p>
+    </div>
+  </div>
+
+  <!-- ── JD Input Card ────────────────────────────────────────────────── -->
+  <div class="card border-0 shadow-sm mb-4 position-relative">
+    <div class="spinner-overlay" id="loadingOverlay">
+      <div class="text-center">
+        <div class="spinner-border text-success" style="width: 3rem; height: 3rem;" role="status"></div>
+        <div class="mt-2 text-muted small fw-semibold">Analysing resumes…</div>
+      </div>
+    </div>
+    <div class="card-body p-4">
+      <form method="POST" action="{{ url_for('match_job') }}" id="matchForm">
+        <label for="jd_text" class="form-label fw-semibold mb-2">
+          <i class="bi bi-pencil-square text-primary me-1"></i>
+          Paste job description or requirements
+        </label>
+        <textarea id="jd_text" name="jd_text" rows="8" required
+                  class="form-control"
+                  placeholder="e.g. We are hiring a Senior Backend Engineer with 5+ years of Python, Flask, PostgreSQL and AWS experience. Strong understanding of REST APIs, CI/CD pipelines and microservices required. Bonus: Kubernetes, Docker, Terraform."
+                  >{{ jd_text or '' }}</textarea>
+        <div class="d-flex justify-content-between align-items-center mt-2 flex-wrap gap-2">
+          <span id="charCount" class="char-count">
+            <i class="bi bi-info-circle me-1"></i>
+            Minimum 20 characters. Longer JDs produce better matches.
+          </span>
+          <button type="submit" id="submitBtn" class="btn btn-success fw-semibold px-4">
+            <i class="bi bi-search-heart me-1"></i> Find Best Matches
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  {% if backfill_status %}
+  <div class="alert alert-info shadow-sm d-flex align-items-start">
+    <i class="bi bi-database-check me-2 mt-1"></i>
+    <div class="small">{{ backfill_status }}</div>
+  </div>
+  {% endif %}
+
+  {% if warning %}
+  <div class="alert alert-warning shadow-sm d-flex align-items-start">
+    <i class="bi bi-exclamation-triangle-fill me-2 mt-1"></i>
+    <div class="small">{{ warning }}</div>
+  </div>
+  {% endif %}
+
+  <!-- ── Results ─────────────────────────────────────────────────────── -->
+  {% if results %}
+    <div class="mb-3 d-flex align-items-center justify-content-between flex-wrap gap-2">
+      <h5 class="fw-bold mb-0">
+        <i class="bi bi-trophy-fill text-warning me-2"></i>
+        Top {{ results|length }} Match{{ '' if results|length == 1 else 'es' }}
+      </h5>
+      <span class="text-muted small">Ranked by overall fit (0–100).</span>
+    </div>
+
+    {% for r in results %}
+    <div class="card match-card border-0 shadow-sm mb-3">
+      <div class="card-body p-4">
+        <div class="row g-3 align-items-start">
+          <div class="col-auto d-flex flex-column align-items-center" style="min-width: 90px;">
+            <div class="score-badge
+              {% if r.score >= 80 %}score-high
+              {% elif r.score >= 60 %}score-medium
+              {% else %}score-low{% endif %}">
+              {{ r.score }}
+            </div>
+            <div class="score-label">Match</div>
+          </div>
+          <div class="col">
+            <div class="d-flex align-items-center flex-wrap gap-2 mb-1">
+              <span class="rank-pill">{{ loop.index }}</span>
+              <a href="{{ url_for('view_resume', applicant_id=r.id) }}"
+                 class="h5 fw-bold mb-0 text-decoration-none text-dark">
+                {{ r.name }}
+              </a>
+            </div>
+            <div class="mb-2">
+              {% if r.specialty %}
+                <span class="pill pill-green">
+                  <i class="bi bi-briefcase me-1"></i>{{ r.specialty }}
+                </span>
+              {% endif %}
+              <span class="pill">
+                <i class="bi bi-clock-history me-1"></i>{{ r.years_experience }} yr{{ '' if r.years_experience == 1 else 's' }}
+              </span>
+              {% if r.highest_education %}
+                <span class="pill">
+                  <i class="bi bi-mortarboard me-1"></i>{{ r.highest_education }}
+                </span>
+              {% endif %}
+            </div>
+            {% if r.skills %}
+              {% set skill_list = r.skills.split(',') %}
+              <div class="mb-2">
+                {% for s in skill_list[:6] %}
+                  {% set s_clean = s.strip() %}
+                  {% if s_clean %}<span class="skill-chip">{{ s_clean }}</span>{% endif %}
+                {% endfor %}
+                {% if skill_list|length > 6 %}
+                  <span class="skill-chip more">+{{ skill_list|length - 6 }} more</span>
+                {% endif %}
+              </div>
+            {% endif %}
+            {% if r.reasoning %}
+              <div class="reasoning">
+                <i class="bi bi-quote me-1 text-muted"></i>{{ r.reasoning }}
+              </div>
+            {% endif %}
+          </div>
+          <div class="col-12 col-md-auto d-flex flex-column gap-2 align-items-stretch align-items-md-end">
+            <a href="{{ url_for('view_resume', applicant_id=r.id) }}"
+               class="btn btn-outline-primary btn-sm fw-semibold">
+              <i class="bi bi-eye me-1"></i> View Full Resume
+            </a>
+            {% if r.has_file and can_download %}
+            <a href="{{ url_for('view_resume', applicant_id=r.id) }}#resume"
+               class="btn btn-outline-secondary btn-sm fw-semibold">
+              <i class="bi bi-file-earmark-text me-1"></i> Resume File
+            </a>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  {% elif searched %}
+    <!-- ── Empty state — no matches ───────────────────────────────── -->
+    <div class="card border-0 shadow-sm">
+      <div class="card-body text-center py-5">
+        <i class="bi bi-search display-3 text-muted opacity-40"></i>
+        <h5 class="mt-3 text-muted">No matching candidates found</h5>
+        <p class="text-muted small mb-0">
+          We couldn't find any resumes that overlap with the keywords in your job description.
+          Try a broader description, or upload more resumes first.
+        </p>
+      </div>
+    </div>
+  {% else %}
+    <!-- ── Empty state — first visit ──────────────────────────────── -->
+    <div class="card border-0 shadow-sm">
+      <div class="card-body text-center py-5">
+        <i class="bi bi-clipboard-data display-3 text-success opacity-50"></i>
+        <h5 class="mt-3 text-muted">Paste a job description above to get started</h5>
+        <p class="text-muted small mb-0">
+          We'll rank every resume on file and show the 10 strongest matches with a short
+          explanation for each.
+        </p>
+      </div>
+    </div>
+  {% endif %}
+
+  <div class="text-center text-muted small mt-4 pb-3">
+    Matching combines keyword overlap with an AI rerank for final ordering.
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+  (function () {
+    var textarea = document.getElementById('jd_text');
+    var counter  = document.getElementById('charCount');
+    var form     = document.getElementById('matchForm');
+    var btn      = document.getElementById('submitBtn');
+    var overlay  = document.getElementById('loadingOverlay');
+
+    function updateCount() {
+      var n = textarea.value.length;
+      counter.classList.remove('ok', 'short');
+      if (n === 0) {
+        counter.innerHTML = '<i class="bi bi-info-circle me-1"></i>'
+          + 'Minimum 20 characters. Longer JDs produce better matches.';
+      } else if (n < 20) {
+        counter.classList.add('short');
+        counter.innerHTML = '<i class="bi bi-exclamation-circle me-1"></i>'
+          + n + ' / 20 characters — add more detail.';
+      } else {
+        counter.classList.add('ok');
+        counter.innerHTML = '<i class="bi bi-check-circle me-1"></i>'
+          + n + ' characters — ready to search.';
+      }
+    }
+
+    if (textarea) {
+      textarea.addEventListener('input', updateCount);
+      updateCount();
+    }
+
+    if (form) {
+      form.addEventListener('submit', function () {
+        if ((textarea.value || '').trim().length < 20) return; // server validates too
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>'
+          + 'Searching…';
+        if (overlay) overlay.classList.add('show');
+      });
+    }
+  })();
+</script>
+</body>
+</html>
