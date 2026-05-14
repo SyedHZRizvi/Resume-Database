@@ -120,23 +120,6 @@
                       {{ u.role }}
                     {% endif %}
                   </span>
-                  {% if u.id != session.user_id %}
-                  {# Change-role form — select changes role immediately on Submit #}
-                  <form method="POST" action="{{ url_for('edit_user_role', user_id=u.id) }}"
-                        class="d-flex align-items-center justify-content-center gap-1 mt-1">
-                    <select name="new_role" class="form-select form-select-sm" style="font-size:.76rem;width:auto">
-                      <option value="super_admin"    {{ 'selected' if u.role=='super_admin' }}>Super Admin</option>
-                      <option value="hr_manager"     {{ 'selected' if u.role=='hr_manager' }}>HR Manager</option>
-                      <option value="recruiter"      {{ 'selected' if u.role=='recruiter' }}>HR Recruiter</option>
-                      <option value="hiring_manager" {{ 'selected' if u.role=='hiring_manager' }}>Hiring Mgr</option>
-                      <option value="viewer"         {{ 'selected' if u.role=='viewer' }}>Viewer</option>
-                    </select>
-                    <button type="submit" class="btn btn-xs btn-outline-secondary px-2 py-0"
-                            style="font-size:.72rem" title="Apply role change">
-                      <i class="bi bi-check-lg"></i>
-                    </button>
-                  </form>
-                  {% endif %}
                 </td>
 
                 <!-- Status: Locked / Active -->
@@ -180,6 +163,13 @@
                         </button>
                       </form>
                     {% endif %}
+
+                    <!-- Edit User (name + role) -->
+                    <button type="button" class="btn btn-sm btn-outline-primary"
+                            title="Edit User"
+                            onclick="showEditModal({{ u.id }}, '{{ u.username | e }}', '{{ (u.full_name or '') | e }}', '{{ u.role }}', {{ 'true' if u.id == session.user_id else 'false' }})">
+                      <i class="bi bi-pencil-square"></i>
+                    </button>
 
                     <!-- Reset Password -->
                     <button type="button" class="btn btn-sm btn-outline-secondary"
@@ -239,11 +229,12 @@
                      autocomplete="off" required minlength="8" />
             </div>
             <div class="col-md-3">
-              <label class="form-label fw-semibold">Role</label>
-              <select name="role" class="form-select">
+              <label class="form-label fw-semibold">Role <span class="text-danger">*</span></label>
+              <select name="role" class="form-select" required>
+                <option value="" disabled selected hidden>— Select a role —</option>
                 <option value="viewer">Viewer (Read Only)</option>
                 <option value="hiring_manager">Hiring Manager</option>
-                <option value="recruiter" selected>HR Recruiter</option>
+                <option value="recruiter">HR Recruiter</option>
                 <option value="hr_manager">HR Manager</option>
                 <option value="super_admin">Super Admin</option>
               </select>
@@ -355,6 +346,55 @@
   </div>
 </div>
 
+<!-- ── Edit User Modal ─────────────────────────────────────────────────────── -->
+<div class="modal fade" id="editUserModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <form id="editUserForm" method="POST">
+        <div class="modal-header border-0">
+          <h5 class="modal-title">
+            <i class="bi bi-pencil-square text-primary me-2"></i>Edit User
+          </h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label fw-semibold text-muted">Username</label>
+            <input type="text" id="editUsername" class="form-control" disabled />
+            <div class="form-text">Usernames cannot be changed — they identify
+              the user across audit logs.</div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-semibold">Full Name</label>
+            <input type="text" name="full_name" id="editFullName"
+                   class="form-control" placeholder="e.g. John Smith" />
+          </div>
+          <div class="mb-1">
+            <label class="form-label fw-semibold">Role <span class="text-danger">*</span></label>
+            <select name="role" id="editRole" class="form-select" required>
+              <option value="" disabled hidden>— Select a role —</option>
+              <option value="viewer">Viewer (Read Only)</option>
+              <option value="hiring_manager">Hiring Manager</option>
+              <option value="recruiter">HR Recruiter</option>
+              <option value="hr_manager">HR Manager</option>
+              <option value="super_admin">Super Admin</option>
+            </select>
+            <div id="editRoleSelfWarning" class="form-text text-warning d-none">
+              <i class="bi bi-info-circle me-1"></i>You cannot change your own role.
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer border-0">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">
+            <i class="bi bi-save me-1"></i>Save Changes
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
 <!-- ── Reset Password Modal ────────────────────────────────────────────────── -->
 <div class="modal fade" id="resetPasswordModal" tabindex="-1">
   <div class="modal-dialog modal-dialog-centered">
@@ -399,6 +439,37 @@ function showResetModal(id, username) {
   document.getElementById('resetPasswordForm').action = '/users/reset-password/' + id;
   document.getElementById('resetNewPassword').value = '';
   new bootstrap.Modal(document.getElementById('resetPasswordModal')).show();
+}
+
+function showEditModal(id, username, fullName, role, isSelf) {
+  document.getElementById('editUsername').value = username;
+  document.getElementById('editFullName').value = fullName || '';
+  const roleSelect  = document.getElementById('editRole');
+  const selfWarning = document.getElementById('editRoleSelfWarning');
+  roleSelect.value = role || '';
+
+  // Clean up any previous self-edit hidden fallback before re-applying.
+  const old = document.getElementById('editRoleFallback');
+  if (old) old.remove();
+
+  if (isSelf) {
+    // A super_admin cannot demote themselves. Lock the select for visual
+    // clarity, and add a hidden input so the form still submits a role.
+    // (Disabled form controls are excluded from form submission, so without
+    // the hidden field the backend would reject the request as "no role".)
+    roleSelect.disabled = true;
+    const fb = document.createElement('input');
+    fb.type  = 'hidden';
+    fb.name  = 'role';
+    fb.id    = 'editRoleFallback';
+    fb.value = role || '';
+    roleSelect.parentNode.appendChild(fb);
+  } else {
+    roleSelect.disabled = false;
+  }
+  selfWarning.classList.toggle('d-none', !isSelf);
+  document.getElementById('editUserForm').action = '/users/edit/' + id;
+  new bootstrap.Modal(document.getElementById('editUserModal')).show();
 }
 </script>
 </body>

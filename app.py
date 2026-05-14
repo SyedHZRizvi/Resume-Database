@@ -807,7 +807,7 @@ def add_user():
     username  = request.form.get('username', '').strip()
     full_name = request.form.get('full_name', '').strip()
     password  = request.form.get('password', '')
-    role      = request.form.get('role', 'viewer')
+    role      = (request.form.get('role') or '').strip()
 
     if not username or not password:
         flash('Username and password are required.', 'error')
@@ -815,8 +815,9 @@ def add_user():
     if len(password) < PASSWORD_MIN_LENGTH:
         flash(f'Password must be at least {PASSWORD_MIN_LENGTH} characters.', 'error')
         return redirect(url_for('manage_users'))
-    if role not in ROLES:
-        role = 'viewer'
+    if not role or role not in ROLES:
+        flash('Please pick a role for the new user.', 'error')
+        return redirect(url_for('manage_users'))
 
     try:
         with get_db() as conn:
@@ -862,6 +863,49 @@ def edit_user_role(user_id):
             log_action('ROLE CHANGED', user['username'],
                        f'Changed to {ROLES[new_role]}')
             flash(f'Role for "{user["username"]}" updated to {ROLES[new_role]}.', 'success')
+    return redirect(url_for('manage_users'))
+
+
+@app.route('/users/edit/<int:user_id>', methods=['POST'])
+@role_required(*CAN_USERS)
+def edit_user(user_id):
+    """Edit a user's full name and role together — Super Admin only.
+    Username is immutable (it's the login identifier — changing it would
+    silently break references to past audit-log entries)."""
+    new_name = (request.form.get('full_name') or '').strip()
+    new_role = (request.form.get('role')      or '').strip()
+
+    if new_role not in ROLES:
+        flash('Please select a valid role.', 'error')
+        return redirect(url_for('manage_users'))
+
+    with get_db() as conn:
+        user = conn.execute('SELECT * FROM users WHERE id=?', (user_id,)).fetchone()
+        if not user:
+            flash('User not found.', 'error')
+            return redirect(url_for('manage_users'))
+
+        # Self-edit is allowed for full_name, but a Super Admin cannot
+        # demote themselves — they'd lock themselves out of this very page.
+        if user_id == session.get('user_id') and new_role != user['role']:
+            flash('You cannot change your own role. Ask another Super Admin '
+                  'to do it.', 'error')
+            return redirect(url_for('manage_users'))
+
+        conn.execute(
+            'UPDATE users SET full_name=?, role=? WHERE id=?',
+            (new_name, new_role, user_id)
+        )
+        conn.commit()
+        details = []
+        if (user['full_name'] or '') != new_name:
+            details.append(f'Name → "{new_name}"')
+        if user['role'] != new_role:
+            details.append(f'Role → {ROLES[new_role]}')
+        log_action('USER EDITED', user['username'],
+                   ', '.join(details) if details else 'No fields changed')
+        flash(f'User "{user["username"]}" updated.', 'success')
+
     return redirect(url_for('manage_users'))
 
 
