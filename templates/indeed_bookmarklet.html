@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Indeed Bookmarklet — Resume Database</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
+  <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet" />
+  <style>
+    .config-pill {
+      display:inline-flex; align-items:center; gap:.4rem;
+      padding:.35rem .8rem; border-radius:999px;
+      font-size:.85rem; font-weight:600;
+    }
+    .pill-ok   { background:#d1fae5; color:#065f46; }
+    .pill-warn { background:#fee2e2; color:#991b1b; }
+    .pill-info { background:#e0f2fe; color:#0369a1; }
+
+    /* The draggable bookmarklet "button" — really an anchor with javascript: scheme */
+    .bookmarklet-link {
+      display:inline-flex; align-items:center; gap:.55rem;
+      background: linear-gradient(135deg, #6DC49A 0%, #52a97e 100%);
+      color:#fff !important;
+      padding:.85rem 1.5rem;
+      border-radius:10px;
+      font-weight:700;
+      font-size:1.05rem;
+      text-decoration:none !important;
+      box-shadow: 0 6px 16px rgba(82, 169, 126, .35);
+      transition: transform .15s ease, box-shadow .15s ease;
+      cursor: grab;
+      user-select:none;
+    }
+    .bookmarklet-link:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 10px 22px rgba(82, 169, 126, .45);
+      color:#fff !important;
+    }
+    .bookmarklet-link:active { cursor: grabbing; transform: translateY(0); }
+    .bookmarklet-link.disabled {
+      background:#cbd5e1;
+      box-shadow:none;
+      cursor:not-allowed;
+      pointer-events:none;
+    }
+    .drag-target {
+      border: 2px dashed #c2e0cf;
+      background: #f8fdfa;
+      border-radius: 12px;
+      padding: 1.5rem;
+      text-align: center;
+    }
+    code.inline-code {
+      background:#f1f5f9; padding:.1rem .35rem; border-radius:4px;
+      font-size:.85rem; color:#0f172a;
+    }
+    .step-num {
+      display:inline-flex; align-items:center; justify-content:center;
+      width:1.6rem; height:1.6rem; border-radius:999px;
+      background:#6DC49A; color:#fff; font-weight:700; font-size:.85rem;
+      margin-right:.5rem; flex-shrink:0;
+    }
+    .step-row { display:flex; align-items:flex-start; margin-bottom:.7rem; }
+    .api-url-box {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .82rem;
+      word-break: break-all;
+      background:#f8fafc; padding:.6rem .8rem;
+      border:1px solid #e2e8f0; border-radius:8px;
+    }
+  </style>
+</head>
+<body>
+
+<nav class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm">
+  <div class="container-fluid px-4">
+    <a class="navbar-brand tc-logo" href="{{ url_for('index') }}">
+      <span class="tc-logo-icon-wrap">
+        <i class="bi bi-file-earmark-text tc-doc"></i>
+        <span class="tc-check"><i class="bi bi-check-lg"></i></span>
+      </span>
+      <span class="tc-logo-text">
+        <span class="tc-trans">Trans</span><span class="tc-crypts">Crypts</span>
+      </span>
+    </a>
+    <div class="ms-auto d-flex align-items-center gap-2">
+      <a href="{{ url_for('index') }}" class="btn btn-home">
+        <i class="bi bi-house-fill me-1"></i> Home
+      </a>
+      {% if require_login %}
+      <span class="text-white-50 small">
+        <i class="bi bi-person-fill me-1"></i>{{ session.full_name }}
+        <span class="badge bg-warning text-dark ms-1">{{ ROLE_LABEL }}</span>
+      </span>
+      <form method="POST" action="{{ url_for('logout') }}" class="d-inline m-0">
+        <button type="submit" class="btn btn-outline-light btn-sm" title="Sign out">
+          <i class="bi bi-box-arrow-right me-1"></i>Sign Out
+        </button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+</nav>
+
+<div class="container-fluid px-4 py-4">
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}{% for category, message in messages %}
+      <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }} alert-dismissible fade show shadow-sm">
+        <i class="bi bi-{{ 'check-circle-fill' if category == 'success' else 'exclamation-triangle-fill' }} me-2"></i>
+        {{ message }}<button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+      </div>
+    {% endfor %}{% endif %}
+  {% endwith %}
+
+  <!-- Header -->
+  <div class="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-2">
+    <div>
+      <h4 class="fw-bold mb-1">
+        <i class="bi bi-bookmark-star text-primary me-2"></i>Indeed Bookmarklet
+      </h4>
+      <p class="text-muted mb-0 small">
+        One-click candidate import from Indeed Resume Search. Drag the
+        green button below to your bookmarks bar, then click it while
+        viewing any candidate profile.
+      </p>
+    </div>
+  </div>
+
+  <!-- Configuration card -->
+  <div class="card border-0 shadow-sm mb-4">
+    <div class="card-body">
+      <h6 class="text-uppercase text-muted small fw-bold mb-3">
+        <i class="bi bi-gear me-1"></i> Configuration
+      </h6>
+      {% if configured %}
+        <span class="config-pill pill-ok">
+          <i class="bi bi-check-circle-fill"></i> Bookmarklet ready
+        </span>
+        <p class="text-muted small mb-0 mt-2">
+          The bookmarklet below has the API key baked in. Drag it to your
+          bookmarks bar and click it on a candidate's Indeed page to save
+          them to TransCrypts.
+        </p>
+      {% else %}
+        <span class="config-pill pill-warn">
+          <i class="bi bi-x-circle-fill"></i> Not configured
+        </span>
+        <div class="alert alert-warning mt-3 mb-0 d-flex align-items-start">
+          <i class="bi bi-exclamation-triangle-fill me-2 mt-1"></i>
+          <div>
+            <strong>Set the env var <code class="inline-code">INDEED_BOOKMARKLET_KEY</code> on Render
+            and redeploy.</strong><br>
+            Pick a long random string — for example
+            <code class="inline-code">openssl rand -hex 24</code>.
+            Anyone who has this key can import candidates, so treat it as
+            a secret. Render → Settings → Environment → Add Environment
+            Variable. Save → redeploy → return to this page.
+          </div>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- The draggable bookmarklet -->
+  <div class="card border-0 shadow-sm mb-4">
+    <div class="card-body">
+      <h6 class="text-uppercase text-muted small fw-bold mb-3">
+        <i class="bi bi-bookmark-plus me-1"></i> Drag this to your bookmarks bar
+      </h6>
+
+      <div class="drag-target mb-3">
+        {% if configured %}
+          <a class="bookmarklet-link" href="{{ bookmarklet_href }}"
+             onclick="event.preventDefault(); alert('Drag this link to your bookmarks bar instead of clicking it here. Once it lives in your bookmarks bar, clicking it while viewing a candidate on Indeed will import them to TransCrypts.'); return false;">
+            <i class="bi bi-cloud-arrow-up-fill"></i>
+            Save to TransCrypts
+          </a>
+        {% else %}
+          <span class="bookmarklet-link disabled" aria-disabled="true">
+            <i class="bi bi-lock-fill"></i>
+            Save to TransCrypts
+          </span>
+        {% endif %}
+        <p class="text-muted small mb-0 mt-3">
+          {% if configured %}
+            <i class="bi bi-info-circle me-1"></i>
+            <strong>Drag</strong> the green button above to your bookmarks
+            bar — don't click it here.
+          {% else %}
+            <i class="bi bi-info-circle me-1"></i>
+            The bookmarklet will appear here once
+            <code class="inline-code">INDEED_BOOKMARKLET_KEY</code> is set.
+          {% endif %}
+        </p>
+      </div>
+
+      <details>
+        <summary class="text-muted small" style="cursor:pointer">
+          Receiving endpoint URL (for reference)
+        </summary>
+        <div class="api-url-box mt-2">{{ api_url }}</div>
+      </details>
+    </div>
+  </div>
+
+  <!-- How to use -->
+  <div class="card border-0 shadow-sm mb-4">
+    <div class="card-body">
+      <h6 class="text-uppercase text-muted small fw-bold mb-3">
+        <i class="bi bi-list-ol me-1"></i> How to use
+      </h6>
+      <div class="step-row">
+        <span class="step-num">1</span>
+        <div>
+          <strong>Show your bookmarks bar.</strong>
+          In Chrome / Edge press <code class="inline-code">Ctrl+Shift+B</code>
+          (Windows) or <code class="inline-code">Cmd+Shift+B</code> (Mac).
+          Firefox: <em>View → Toolbars → Bookmarks Toolbar</em>.
+        </div>
+      </div>
+      <div class="step-row">
+        <span class="step-num">2</span>
+        <div>
+          <strong>Drag the green “Save to TransCrypts” button</strong> above
+          into your bookmarks bar. It will appear as a new bookmark.
+        </div>
+      </div>
+      <div class="step-row">
+        <span class="step-num">3</span>
+        <div>
+          <strong>Open Indeed Resume Search</strong> and view any candidate's
+          profile.
+        </div>
+      </div>
+      <div class="step-row">
+        <span class="step-num">4</span>
+        <div>
+          <strong>Click the bookmark.</strong> A small preview shows the
+          parsed fields (name / email / phone / position / resume URL).
+          Review them, then click <em>Save</em>. A confirmation toast
+          appears in the bottom-right corner.
+        </div>
+      </div>
+      <div class="step-row">
+        <span class="step-num">5</span>
+        <div>
+          <strong>Skip the preview</strong> by holding <kbd>Shift</kbd> while
+          clicking the bookmark — the import runs immediately. Useful when
+          you're sweeping a long candidate list.
+        </div>
+      </div>
+      <p class="text-muted small mb-0 mt-2">
+        <i class="bi bi-shield-lock me-1"></i>
+        Indeed's class names change frequently, so the bookmarklet uses
+        generic queries (page title, mailto/tel links, body text scans).
+        If a field comes back blank, edit the candidate in TransCrypts to
+        fix it — the import still succeeds.
+      </p>
+    </div>
+  </div>
+
+  <!-- Recent imports -->
+  <div class="card border-0 shadow-sm mb-4">
+    <div class="card-body p-0">
+      <div class="px-3 pt-3 pb-2 border-bottom">
+        <h6 class="text-uppercase text-muted small fw-bold mb-0">
+          <i class="bi bi-people me-1"></i>
+          Recent Indeed Applicants (last 20)
+        </h6>
+      </div>
+      {% if recent %}
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th class="ps-3 text-muted fw-semibold">Name</th>
+              <th class="text-muted fw-semibold">Email</th>
+              <th class="text-muted fw-semibold">Applied Position</th>
+              <th class="text-muted fw-semibold">Added</th>
+              <th class="text-muted fw-semibold pe-3 text-end">View</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for a in recent %}
+            <tr>
+              <td class="ps-3 fw-semibold">{{ a.name or '—' }}</td>
+              <td>{{ a.email or '—' }}</td>
+              <td>{{ a.applied_position or '—' }}</td>
+              <td class="text-muted small">{{ a.date_added or '—' }}</td>
+              <td class="pe-3 text-end">
+                <a href="{{ url_for('view_resume', applicant_id=a.id) }}"
+                   class="btn btn-sm btn-outline-primary">
+                  <i class="bi bi-eye"></i>
+                </a>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+        <div class="text-center py-4 text-muted">
+          <i class="bi bi-inbox display-6 opacity-50"></i>
+          <p class="mb-0 small mt-2">No Indeed applicants yet.</p>
+        </div>
+      {% endif %}
+      <p class="text-muted small mb-0 px-3 py-2 border-top">
+        <i class="bi bi-info-circle me-1"></i>
+        Shows every applicant whose <code class="inline-code">source = 'Indeed'</code>,
+        including those ingested via the
+        <a href="{{ url_for('admin_indeed_inbox') }}">Indeed Inbox</a>
+        IMAP poller. Bookmarklet imports include
+        <code class="inline-code">IMPORT-SRC=bookmarklet</code> in the audit log.
+      </p>
+    </div>
+  </div>
+
+  <!-- Reset key -->
+  <div class="card border-0 shadow-sm mb-4">
+    <div class="card-body">
+      <h6 class="text-uppercase text-muted small fw-bold mb-3">
+        <i class="bi bi-key me-1"></i> Rotate API key
+      </h6>
+      <p class="small text-muted mb-3">
+        If the bookmarklet key leaks (or you suspect it has), rotate it.
+        The actual key value lives only on Render — this button just
+        reminds you of the steps.
+      </p>
+      <form method="POST" action="{{ url_for('admin_indeed_bookmarklet_regenerate_key') }}"
+            class="d-inline">
+        <button type="submit" class="btn btn-outline-danger fw-semibold">
+          <i class="bi bi-arrow-repeat me-1"></i> How to reset key
+        </button>
+      </form>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

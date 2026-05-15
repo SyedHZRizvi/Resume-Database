@@ -173,6 +173,26 @@ def _indeed_settings():
     }
 
 
+def _indeed_bookmarklet_settings():
+    """Return the current Indeed bookmarklet config as a dict.
+
+    The HR user drags a generated bookmarklet into their bookmarks bar; when
+    clicked on a candidate's Indeed page the bookmarklet POSTs the scraped
+    fields to /api/indeed/import using the API key baked in by the server.
+    This helper centralizes config so both the admin page and the import
+    endpoint read from a single source.
+
+    Never raises; never echoes the key value into logs or flash messages.
+    """
+    key  = (_cfg('INDEED_BOOKMARKLET_KEY', '') or '').strip()
+    base = (_cfg('PUBLIC_BASE_URL', '') or '').strip().rstrip('/')
+    return {
+        'api_key':       key,
+        'public_base':   base,         # may be '' — caller falls back to request.url_root
+        'is_configured': bool(key),
+    }
+
+
 # When Claude Code manages auth, the base URL is set and the key may be empty
 CLAUDE_CODE_MANAGED = bool(os.environ.get('CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST', ''))
 from datetime import datetime, timedelta
@@ -5926,6 +5946,367 @@ def admin_indeed_inbox():
         cron_url         = cron_url,
         has_token        = bool(settings['cron_token']),
     )
+
+
+# ── Indeed bookmarklet (single-click candidate import from Indeed) ─────────
+# The HR user drags a small bookmarklet into their bookmarks bar. While
+# viewing a candidate's profile on Indeed Resume Search they click the
+# bookmarklet; it extracts name / email / phone / position / resume link
+# from the current page DOM and POSTs them to /api/indeed/import with a
+# pre-shared bearer key baked into the bookmarklet itself. The endpoint
+# reuses the standard parse_resume_bytes + find_identity_match + storage
+# pipeline so imported candidates land in the same place as everything else.
+
+@app.route('/api/indeed/import', methods=['POST', 'OPTIONS'])
+def api_indeed_import():
+    """Public token-authenticated endpoint for the Indeed bookmarklet.
+
+    No Flask session is involved — the request comes from indeed.com via
+    `fetch` so we authenticate with an API key (the INDEED_BOOKMARKLET_KEY
+    env var, compared with hmac.compare_digest). The existing
+    `_add_cors_headers` after_request hook already emits the necessary
+    CORS headers; we still respond to the OPTIONS preflight here.
+
+    Body (JSON):
+        api_key, name, email, phone, position, summary, skills,
+        resume_url, source_url, raw_html_text.
+
+    Returns JSON {ok, applicant_id?, duplicate?, message}.
+    """
+    if request.method == 'OPTIONS':
+        return ('', 204)
+
+    cfg = _indeed_bookmarklet_settings()
+    expected_key = cfg['api_key']
+
+    # ── Auth ─────────────────────────────────────────────────────────────
+    # Fail-closed when the key isn't configured on the host — that way a
+    # missing env var doesn't open the endpoint to the public internet.
+    try:
+        payload = request.get_json(force=True, silent=True) or {}
+    except Exception:
+        payload = {}
+
+    provided_key = (payload.get('api_key') or
+                    request.headers.get('X-API-Key') or '').strip()
+    if not expected_key or not provided_key or \
+       not hmac.compare_digest(str(provided_key), str(expected_key)):
+        return jsonify({'ok': False,
+                        'message': 'Unauthorized — invalid or missing API key.'}), 401
+
+    # ── Extract / sanitize fields ────────────────────────────────────────
+    def _s(v, limit=2000):
+        if v is None:
+            return ''
+        try:
+            return str(v).strip()[:limit]
+        except Exception:
+            return ''
+
+    name          = _s(payload.get('name'),          300)
+    email         = _s(payload.get('email'),         300)
+    phone         = _s(payload.get('phone'),         100)
+    position      = _s(payload.get('position'),      500)
+    summary       = _s(payload.get('summary'),       4000)
+    skills        = _s(payload.get('skills'),        2000)
+    resume_url    = _s(payload.get('resume_url'),    2000)
+    source_url    = _s(payload.get('source_url'),    2000)
+    raw_html_text = _s(payload.get('raw_html_text'), 8000)
+
+    if not (name or email):
+        return jsonify({'ok': False,
+                        'message': 'Need at least a name or an email '
+                                   'to import. Try opening the candidate '
+                                   'profile and clicking the bookmark again.'}), 400
+
+    # ── Try to download the resume file when a URL is supplied ──────────
+    resume_filename = None
+    file_hash       = None
+    text_hash       = None
+    parsed_text     = None
+    parsed          = {}
+    resume_note     = ''
+
+    if resume_url:
+        chosen = None
+        try:
+            import requests as _rq
+            resp = _rq.get(
+                resume_url, timeout=10, allow_redirects=True,
+                headers={'User-Agent': 'Mozilla/5.0 TransCrypts-ResumeDB-Bookmarklet'},
+            )
+            if resp.status_code == 200 and resp.content and len(resp.content) < 10 * 1024 * 1024:
+                ctype = (resp.headers.get('Content-Type') or '').split(';', 1)[0].strip().lower()
+                if ('pdf' in ctype) or ('msword' in ctype) or \
+                   ('officedocument' in ctype) or ('octet-stream' in ctype):
+                    head = resp.content[:8]
+                    if 'pdf' in ctype or head.startswith(b'%PDF'):
+                        ext = 'pdf'
+                    elif 'msword' in ctype:
+                        ext = 'doc'
+                    elif 'officedocument' in ctype or head.startswith(b'PK\x03\x04'):
+                        ext = 'docx'
+                    else:
+                        ext = None
+                    if ext:
+                        # Recover filename from Content-Disposition if possible
+                        cd = resp.headers.get('Content-Disposition') or ''
+                        fn_match = re.search(r'filename\*?=(?:UTF-8\'\')?["\']?([^;"\']+)', cd)
+                        if fn_match:
+                            fname = fn_match.group(1).strip()
+                            if not fname.lower().endswith('.' + ext):
+                                fname = fname.rsplit('.', 1)[0] + '.' + ext
+                        else:
+                            fname = f'IndeedResume.{ext}'
+                        chosen = (fname, resp.content, ctype or f'application/{ext}')
+        except Exception:
+            chosen = None
+
+        if chosen:
+            attach_name, raw_bytes, ctype = chosen
+            try:
+                file_hash = hashlib.sha256(raw_bytes).hexdigest()
+            except Exception:
+                file_hash = None
+            try:
+                text_hash = compute_text_hash(raw_bytes, attach_name)
+            except Exception:
+                text_hash = None
+            try:
+                parsed = parse_resume_bytes(raw_bytes, attach_name) or {}
+            except Exception:
+                parsed = {}
+            try:
+                _txt = _extract_text_from_file(raw_bytes, (attach_name or '').lower())
+                if _txt and _txt.strip():
+                    parsed_text = _txt
+            except Exception:
+                parsed_text = None
+            try:
+                resume_filename = make_unique_filename(attach_name or 'IndeedResume.pdf')
+                _storage.save_file(resume_filename, raw_bytes,
+                                   ctype or 'application/octet-stream')
+            except Exception as e:
+                resume_filename = None
+                resume_note = (resume_note + ' ' if resume_note else '') + \
+                              f'(Failed to save resume file: {type(e).__name__})'
+        else:
+            resume_note = ('Resume file not directly downloadable — open '
+                           'the source link on Indeed to grab it manually.')
+
+    # If we don't have a real file, fall back to the page text the
+    # bookmarklet captured so the job-matcher can still find this person.
+    if not parsed_text and raw_html_text:
+        parsed_text = raw_html_text
+
+    # ── Identity match (parsed values win over what the page yielded) ───
+    effective_name  = (parsed.get('name')  or '').strip() or name
+    effective_email = (parsed.get('email') or '').strip() or email
+    effective_phone = (parsed.get('phone') or '').strip() or phone
+
+    try:
+        match = find_identity_match(name=effective_name,
+                                    email=effective_email,
+                                    phone=effective_phone)
+    except Exception:
+        match = None
+
+    final_position = position or 'Indeed Profile'
+
+    try:
+        if match:
+            # Append the new position context to the existing row
+            try:
+                with get_db() as conn:
+                    row = conn.execute(
+                        'SELECT applied_position FROM applicants WHERE id=?',
+                        (match['id'],)
+                    ).fetchone()
+                    old_pos = (row['applied_position'] if row else '') or ''
+                    if final_position and final_position.lower() not in old_pos.lower():
+                        new_pos = (old_pos + ' | ' + final_position).strip(' |') \
+                                  if old_pos else final_position
+                        conn.execute(
+                            'UPDATE applicants SET applied_position=? WHERE id=?',
+                            (new_pos, match['id'])
+                        )
+                        conn.commit()
+            except Exception:
+                pass
+            log_action('INDEED IMPORT (DUP)',
+                       effective_name or '(unknown)',
+                       f'Already on file as id={match["id"]}. '
+                       f'IMPORT-SRC=bookmarklet | Position: {final_position} | '
+                       f'Source: {source_url[:200]}')
+            return jsonify({
+                'ok':           True,
+                'duplicate':    True,
+                'applicant_id': match['id'],
+                'message':      f'Already on file as {match.get("name") or "this candidate"}.',
+            })
+
+        # ── Insert a new applicant ───────────────────────────────────────
+        final_name = effective_name or 'Indeed Candidate'
+        final_specialty = (parsed.get('specialty') or '').strip() or \
+                          (final_position or 'Indeed Profile')
+        years   = _safe_int(parsed.get('years_experience'), 0)
+        edu     = (parsed.get('highest_education') or '').strip()
+        merged_skills = (parsed.get('skills') or '').strip() or skills
+        notes_parts = []
+        if summary:
+            notes_parts.append(summary)
+        if parsed.get('notes'):
+            notes_parts.append(parsed['notes'])
+        if source_url:
+            notes_parts.append(f'Imported from Indeed via bookmarklet — source: {source_url}')
+        if resume_note:
+            notes_parts.append(resume_note)
+        notes_combined = '\n\n'.join(notes_parts)
+        linkedin = (parsed.get('linkedin_url') or '').strip()
+        github   = (parsed.get('github_url')   or '').strip()
+
+        with get_db() as conn:
+            cur = conn.execute(
+                '''INSERT INTO applicants
+                   (name, email, phone, specialty, years_experience,
+                    highest_education, skills, resume_filename, notes,
+                    date_added, hiring_status, linkedin_url, github_url,
+                    file_hash, text_hash, source, applied_position,
+                    parsed_text)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (
+                    final_name,
+                    effective_email,
+                    effective_phone,
+                    final_specialty,
+                    years,
+                    edu,
+                    merged_skills,
+                    resume_filename,
+                    notes_combined,
+                    datetime.now().isoformat(timespec='seconds'),
+                    'Under Review',
+                    linkedin,
+                    github,
+                    file_hash,
+                    text_hash,
+                    'Indeed',
+                    final_position,
+                    parsed_text,
+                )
+            )
+            new_id = getattr(cur, 'lastrowid', None)
+            if new_id is None:
+                # Postgres path (psycopg2) — re-query the new id
+                try:
+                    row = conn.execute(
+                        'SELECT id FROM applicants WHERE name=? AND '
+                        'COALESCE(email,\'\')=COALESCE(?,\'\') '
+                        'ORDER BY id DESC LIMIT 1',
+                        (final_name, effective_email)
+                    ).fetchone()
+                    new_id = row['id'] if row else None
+                except Exception:
+                    new_id = None
+            conn.commit()
+        log_action('INDEED IMPORT',
+                   final_name,
+                   f'IMPORT-SRC=bookmarklet | Position: {final_position} | '
+                   f'Source: {source_url[:200]}'
+                   + ('' if resume_filename else ' | no resume file'))
+        return jsonify({
+            'ok':           True,
+            'duplicate':    False,
+            'applicant_id': new_id,
+            'message':      f'Saved {final_name} to TransCrypts.',
+        })
+    except Exception as e:
+        try:
+            log_action('INDEED IMPORT ERROR',
+                       effective_name or '(unknown)',
+                       f'{type(e).__name__}: {str(e)[:300]}')
+        except Exception:
+            pass
+        return jsonify({
+            'ok':      False,
+            'message': 'Server error while saving — please try again or '
+                       'add the candidate manually.',
+        }), 500
+
+
+# Bookmarklet JS source. Two placeholders __API_URL__ and __API_KEY__ are
+# substituted server-side; the result is then URL-quoted and stuffed into
+# the href="javascript:..." of a draggable link. Keep this as one logical
+# block of statements; the build step joins it onto a single line so it
+# survives copy-paste into a bookmark.
+_INDEED_BOOKMARKLET_JS = r"""(function(){var __SHIFT__=!!(window.event&&window.event.shiftKey);var __URL__='__API_URL__';var __KEY__='__API_KEY__';function txt(el){return el?(el.innerText||el.textContent||'').trim():'';}function pickEmail(){var a=document.querySelector('a[href^=\"mailto:\"]');if(a){var v=a.getAttribute('href').replace(/^mailto:/i,'').split('?')[0].trim();if(v)return v;}var m=document.body.innerText.match(/[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/);return m?m[0]:'';}function pickPhone(){var a=document.querySelector('a[href^=\"tel:\"]');if(a){var v=a.getAttribute('href').replace(/^tel:/i,'').trim();if(v)return v;}var m=document.body.innerText.match(/\+?\d[\d\-\s().]{7,}\d/);return m?m[0].trim():'';}function pickName(){var t=(document.title||'').replace(/\s*-\s*Indeed.*$/i,'').replace(/\s*\|\s*Indeed.*$/i,'').trim();var h1=document.querySelector('h1');if(h1){var v=txt(h1);if(v&&v.length<120)return v;}if(t&&t.length<120)return t;var h2=document.querySelector('h2');return h2?txt(h2).slice(0,120):'';}function pickPosition(){var sels=['[data-testid*=\"jobTitle\"]','[data-testid*=\"headline\"]','[class*=\"headline\"]','[class*=\"JobTitle\"]','[class*=\"jobTitle\"]','h2'];for(var i=0;i<sels.length;i++){var el=document.querySelector(sels[i]);if(el){var v=txt(el);if(v&&v.length<200&&!/indeed/i.test(v))return v;}}var t=(document.title||'');var m=t.match(/-\s*([^|\-]{3,80})\s*-\s*Indeed/i);return m?m[1].trim():'';}function pickResume(){var as=document.querySelectorAll('a');for(var i=0;i<as.length;i++){var a=as[i];var label=((a.innerText||a.textContent||'')+' '+(a.getAttribute('href')||'')+' '+(a.getAttribute('aria-label')||'')).toLowerCase();if(/(resume|\bcv\b|download)/.test(label)){var h=a.getAttribute('href');if(h)return new URL(h,location.href).href;}}return '';}function pickSkills(){var out=[];var nodes=document.querySelectorAll('[class*=\"skill\" i], [data-testid*=\"skill\" i]');for(var i=0;i<nodes.length&&out.length<40;i++){var v=txt(nodes[i]);if(v&&v.length<80&&out.indexOf(v)<0)out.push(v);}return out.join(', ');}function pickSummary(){var sels=['[data-testid*=\"summary\" i]','[class*=\"summary\" i]','[class*=\"about\" i]'];for(var i=0;i<sels.length;i++){var el=document.querySelector(sels[i]);if(el){var v=txt(el);if(v&&v.length>40)return v.slice(0,2000);}}return '';}var data={api_key:__KEY__,name:pickName(),email:pickEmail(),phone:pickPhone(),position:pickPosition(),summary:pickSummary(),skills:pickSkills(),resume_url:pickResume(),source_url:location.href,raw_html_text:(document.body.innerText||'').slice(0,2000)};function toast(msg,kind){var bg=kind==='error'?'#dc2626':(kind==='dup'?'#d97706':'#059669');var d=document.createElement('div');d.style.cssText='position:fixed;bottom:18px;right:18px;background:'+bg+';color:#fff;padding:12px 16px;border-radius:8px;font:600 14px/1.3 system-ui,-apple-system,Segoe UI,sans-serif;box-shadow:0 4px 12px rgba(0,0,0,.25);z-index:2147483647;max-width:360px;';d.textContent=msg;document.body.appendChild(d);setTimeout(function(){d.style.opacity='0';d.style.transition='opacity .4s';},3600);setTimeout(function(){d.remove();},4200);}function send(payload){return fetch(__URL__,{method:'POST',mode:'cors',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json().then(function(j){return{status:r.status,body:j};}).catch(function(){return{status:r.status,body:{ok:false,message:'Bad JSON from server'}};});});}function fire(payload){send(payload).then(function(res){if(res.status===200&&res.body.ok){toast(res.body.message||'Saved.',res.body.duplicate?'dup':'ok');}else{toast((res.body&&res.body.message)||('Error ('+res.status+')'),'error');}}).catch(function(e){toast('Network error: '+(e&&e.message||e),'error');});}if(__SHIFT__){fire(data);return;}var existing=document.getElementById('__tc_indeed_modal__');if(existing)existing.remove();var overlay=document.createElement('div');overlay.id='__tc_indeed_modal__';overlay.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:2147483646;display:flex;align-items:center;justify-content:center;font:14px/1.4 system-ui,-apple-system,Segoe UI,sans-serif;';var modal=document.createElement('div');modal.style.cssText='background:#fff;width:min(520px,94vw);max-height:88vh;overflow:auto;border-radius:12px;box-shadow:0 12px 30px rgba(0,0,0,.3);padding:18px 20px;';modal.innerHTML='<div style=\"display:flex;align-items:center;gap:8px;margin-bottom:8px\"><div style=\"width:28px;height:28px;border-radius:8px;background:#6DC49A;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700\">TC</div><h3 style=\"margin:0;font-size:16px;color:#0f172a\">Save to TransCrypts</h3></div><p style=\"margin:6px 0 12px;color:#64748b\">Review the parsed fields, then click Save.</p>';var grid=document.createElement('div');grid.style.cssText='display:grid;grid-template-columns:120px 1fr;gap:6px 10px;font-size:13px;';function row(label,val){var k=document.createElement('div');k.style.cssText='color:#64748b;font-weight:600';k.textContent=label;var v=document.createElement('div');v.style.cssText='color:#0f172a;word-break:break-word';v.textContent=val||'(none found)';grid.appendChild(k);grid.appendChild(v);}row('Name',data.name);row('Email',data.email);row('Phone',data.phone);row('Position',data.position);row('Resume URL',data.resume_url);row('Skills',data.skills);modal.appendChild(grid);var btns=document.createElement('div');btns.style.cssText='display:flex;gap:8px;justify-content:flex-end;margin-top:16px;';var cancel=document.createElement('button');cancel.textContent='Cancel';cancel.style.cssText='padding:8px 14px;border:1px solid #cbd5e1;background:#fff;color:#0f172a;border-radius:6px;cursor:pointer;font-weight:600';cancel.onclick=function(){overlay.remove();};var save=document.createElement('button');save.textContent='Save';save.style.cssText='padding:8px 16px;border:0;background:#6DC49A;color:#fff;border-radius:6px;cursor:pointer;font-weight:700';save.onclick=function(){save.disabled=true;save.textContent='Saving...';fire(data);overlay.remove();};btns.appendChild(cancel);btns.appendChild(save);modal.appendChild(btns);overlay.appendChild(modal);overlay.addEventListener('click',function(e){if(e.target===overlay)overlay.remove();});document.body.appendChild(overlay);})();"""
+
+
+def _build_indeed_bookmarklet(api_url, api_key):
+    """Return a fully-encoded `javascript:...` href for the bookmarklet.
+
+    api_key is embedded as a JS string literal — never logged. The caller
+    feeds the result straight into a Jinja `{{ ... }}` slot inside an
+    `<a href="..." />` tag.
+    """
+    from urllib.parse import quote as _q
+    # Escape any backslash / single-quote in the key before inlining
+    safe_key = (api_key or '').replace('\\', '\\\\').replace("'", "\\'")
+    js = _INDEED_BOOKMARKLET_JS.replace('__API_URL__', api_url).replace('__API_KEY__', safe_key)
+    # URL-encode aggressively so " < > # % { } | etc. all survive the href.
+    return 'javascript:' + _q(js, safe='')
+
+
+@app.route('/admin/indeed-bookmarklet')
+@role_required(*CAN_USERS)
+def admin_indeed_bookmarklet():
+    """Admin page: shows the draggable bookmarklet + how-to + recent imports.
+    The API key never appears in the page body as bare text — only as a
+    JS string literal inside the bookmarklet href.
+    """
+    cfg = _indeed_bookmarklet_settings()
+
+    # API base URL — prefer PUBLIC_BASE_URL when set so the bookmarklet
+    # works even if the admin happens to view the page on a preview/staging
+    # host. Fall back to whatever scheme/host the user used to reach us.
+    base = cfg['public_base'] or request.url_root.rstrip('/')
+    api_url = base + url_for('api_indeed_import')
+
+    bookmarklet_href = ''
+    if cfg['is_configured']:
+        bookmarklet_href = _build_indeed_bookmarklet(api_url, cfg['api_key'])
+
+    recent = []
+    try:
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT id, name, email, applied_position, date_added "
+                "FROM applicants "
+                "WHERE COALESCE(source, '') = 'Indeed' "
+                "ORDER BY date_added DESC, id DESC LIMIT 20"
+            ).fetchall()
+            recent = [dict(r) for r in rows]
+    except Exception:
+        recent = []
+
+    return render_template(
+        'indeed_bookmarklet.html',
+        configured       = cfg['is_configured'],
+        api_url          = api_url,
+        bookmarklet_href = bookmarklet_href,
+        recent           = recent,
+    )
+
+
+@app.route('/admin/indeed-bookmarklet/regenerate-key', methods=['POST'])
+@role_required(*CAN_USERS)
+def admin_indeed_bookmarklet_regenerate_key():
+    """Placeholder — actual rotation happens on the host (Render env vars),
+    not in code. We just remind the admin where to go."""
+    flash('To rotate the key, change INDEED_BOOKMARKLET_KEY on Render '
+          'and redeploy. The bookmarklet must then be re-dragged to your '
+          'bookmarks bar so it picks up the new key.', 'success')
+    return redirect(url_for('admin_indeed_bookmarklet'))
 
 
 @app.route('/shutdown', methods=['POST'])
