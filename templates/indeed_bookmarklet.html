@@ -344,13 +344,36 @@
   (function(){
     if (window.__tooltipsInit) return;
     window.__tooltipsInit = true;
+    function placementFor(el){
+      var rect = el.getBoundingClientRect();
+      var preferLeft = rect.left > (window.innerWidth / 2);
+      return {
+        primary: preferLeft ? 'left' : 'right',
+        fallback: preferLeft ? ['right','top','bottom'] : ['left','top','bottom']
+      };
+    }
+    function attach(el){
+      var p = placementFor(el);
+      return new bootstrap.Tooltip(el, {
+        placement: p.primary,
+        fallbackPlacements: p.fallback,
+        delay: { show: 100, hide: 50 },
+        offset: [0, 14],
+        customClass: 'tc-tooltip'
+      });
+    }
     document.addEventListener('DOMContentLoaded', function(){
-      document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function(el){
-        new bootstrap.Tooltip(el, {
-          delay: { show: 150, hide: 50 },
-          offset: [0, 18],
-          customClass: 'tc-tooltip'
-        });
+      document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(attach);
+      var t;
+      window.addEventListener('resize', function(){
+        clearTimeout(t);
+        t = setTimeout(function(){
+          document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function(el){
+            var inst = bootstrap.Tooltip.getInstance(el);
+            if (inst) inst.dispose();
+            attach(el);
+          });
+        }, 200);
       });
     });
   })();
