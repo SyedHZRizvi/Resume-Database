@@ -342,3 +342,36 @@ body {
 @media (max-width: 768px) {
   .skills-cell { max-width: 160px; }
 }
+
+/* ── Navbar icon-only buttons (tooltips show the label on hover) ──────────── */
+.tc-nav-icon {
+  width: 42px;
+  height: 42px;
+  padding: 0 !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  flex-shrink: 0;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.tc-nav-icon i.bi {
+  font-size: 1.2rem;
+  margin: 0 !important;
+  line-height: 1;
+}
+.tc-nav-icon:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
+}
+.tc-nav-icon:active {
+  transform: translateY(0);
+}
+/* Slightly smaller variant for sub-page navbars that used btn-sm */
+.tc-nav-icon.btn-sm {
+  width: 36px;
+  height: 36px;
+}
+.tc-nav-icon.btn-sm i.bi {
+  font-size: 1.05rem;
+}

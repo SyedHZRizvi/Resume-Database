@@ -24,37 +24,25 @@
       </span>
     </a>
     <div class="ms-auto d-flex align-items-center gap-2">
-      <a href="{{ url_for('index') }}" class="btn btn-home" title="Home">
-        <i class="bi bi-house-fill me-1"></i> Home
-      </a>
+      <a href="{{ url_for('index') }}" class="btn btn-home tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Home"><i class="bi bi-house-fill"></i></a>
       {% if can_edit %}
-      <a href="{{ url_for('edit_resume', applicant_id=applicant.id) }}" class="btn btn-warning fw-semibold">
-        <i class="bi bi-pencil-fill me-1"></i> Edit
-      </a>
+      <a href="{{ url_for('edit_resume', applicant_id=applicant.id) }}" class="btn btn-warning tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Edit"><i class="bi bi-pencil-fill"></i></a>
       {% endif %}
       {% if can_delete %}
-      <button type="button" class="btn btn-outline-danger fw-semibold"
-              onclick="confirmDelete({{ applicant.id }}, '{{ applicant.name | e }}')">
-        <i class="bi bi-trash3-fill me-1"></i> Delete
-      </button>
+      <button type="button" onclick="confirmDelete({{ applicant.id }}, '{{ applicant.name | e }}')" class="btn btn-outline-danger tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Delete"><i class="bi bi-trash3-fill"></i></button>
       {% endif %}
-      <a href="{{ url_for('index') }}" class="btn btn-outline-light">
-        <i class="bi bi-arrow-left me-1"></i> Back
-      </a>
+      <a href="{{ url_for('index') }}" class="btn btn-outline-light tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Back"><i class="bi bi-arrow-left"></i></a>
       <!-- User menu (only when login is enabled) -->
       {% if require_login %}
       <form method="POST" action="{{ url_for('logout') }}" class="d-inline m-0">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button type="submit" class="btn btn-outline-light fw-semibold px-3" title="Sign out">
-          <i class="bi bi-box-arrow-right me-1"></i> Sign Out
-        </button>
+        <button type="submit" class="btn btn-outline-light tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Sign Out"><i class="bi bi-box-arrow-right"></i></button>
       </form>
       <div class="dropdown">
         <button class="btn btn-outline-light dropdown-toggle d-flex align-items-center gap-2"
                 type="button" data-bs-toggle="dropdown">
           <i class="bi bi-person-circle"></i>
           <span class="d-none d-lg-inline">{{ session.full_name }}</span>
-          <span class="badge bg-warning text-dark" style="font-size:.65rem">{{ ROLE_LABEL }}</span>
         </button>
         <ul class="dropdown-menu dropdown-menu-end shadow">
           <li><h6 class="dropdown-header">{{ session.username }}</h6></li>
@@ -81,9 +69,7 @@
       </div>
       {% endif %}
       {% if can_shutdown %}
-      <button type="button" class="btn btn-danger fw-semibold px-3" onclick="showShutdownModal()">
-        <i class="bi bi-power me-1"></i> Close Program
-      </button>
+      <button type="button" class="btn btn-danger tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Close Program" onclick="showShutdownModal()"><i class="bi bi-power"></i></button>
       {% endif %}
     </div>
   </div>
@@ -1062,6 +1048,18 @@ function confirmDelete(id, name) {
     };
   })();
   /*csrf-shim*/
+</script>
+
+<script>
+  // Init Bootstrap tooltips on the navbar icon buttons. /*tooltip-init*/
+  (function(){
+    if (window.__tooltipsInit) return;
+    window.__tooltipsInit = true;
+    document.addEventListener('DOMContentLoaded', function(){
+      document.querySelectorAll('[data-bs-toggle="tooltip"]')
+        .forEach(function(el){ new bootstrap.Tooltip(el, { delay: { show: 200, hide: 50 } }); });
+    });
+  })();
 </script>
 </body>
 </html>

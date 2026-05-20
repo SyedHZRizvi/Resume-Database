@@ -24,18 +24,12 @@
       </span>
     </a>
     <div class="ms-auto d-flex align-items-center gap-2">
-      <a href="{{ url_for('index') }}" class="btn btn-home" title="Home">
-        <i class="bi bi-house-fill me-1"></i> Home
-      </a>
-      <a href="{{ url_for('view_resume', applicant_id=applicant.id) }}" class="btn btn-outline-light">
-        <i class="bi bi-arrow-left me-1"></i> Cancel Edit
-      </a>
+      <a href="{{ url_for('index') }}" class="btn btn-home tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Home"><i class="bi bi-house-fill"></i></a>
+      <a href="{{ url_for('view_resume', applicant_id=applicant.id) }}" class="btn btn-outline-light tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Cancel Edit"><i class="bi bi-arrow-left"></i></a>
       {% if require_login %}
       <form method="POST" action="{{ url_for('logout') }}" class="d-inline m-0">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button type="submit" class="btn btn-outline-light fw-semibold px-3" title="Sign out">
-          <i class="bi bi-box-arrow-right me-1"></i> Sign Out
-        </button>
+        <button type="submit" class="btn btn-outline-light tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Sign Out"><i class="bi bi-box-arrow-right"></i></button>
       </form>
       <div class="dropdown">
         <button class="btn btn-outline-light dropdown-toggle d-flex align-items-center gap-2"
@@ -67,9 +61,7 @@
         </ul>
       </div>
       {% endif %}
-      <button type="button" class="btn btn-danger fw-semibold px-3" onclick="showShutdownModal()">
-        <i class="bi bi-power me-1"></i> Close Program
-      </button>
+      <button type="button" class="btn btn-danger tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Close Program" onclick="showShutdownModal()"><i class="bi bi-power"></i></button>
     </div>
   </div>
 </nav>
@@ -599,6 +591,18 @@ document.getElementById('editForm').addEventListener('submit', function () {
     };
   })();
   /*csrf-shim*/
+</script>
+
+<script>
+  // Init Bootstrap tooltips on the navbar icon buttons. /*tooltip-init*/
+  (function(){
+    if (window.__tooltipsInit) return;
+    window.__tooltipsInit = true;
+    document.addEventListener('DOMContentLoaded', function(){
+      document.querySelectorAll('[data-bs-toggle="tooltip"]')
+        .forEach(function(el){ new bootstrap.Tooltip(el, { delay: { show: 200, hide: 50 } }); });
+    });
+  })();
 </script>
 </body>
 </html>

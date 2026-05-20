@@ -77,46 +77,29 @@
       </span>
     </a>
     <div class="ms-auto d-flex align-items-center gap-2">
-      <a href="{{ url_for('match_job') }}" class="btn btn-outline-light fw-semibold px-3">
-        <i class="bi bi-stars me-1"></i> Find Best Match
-      </a>
-      <a href="{{ url_for('staff_list') }}" class="btn btn-outline-light fw-semibold px-3">
-        <i class="bi bi-person-badge-fill me-1"></i> Staff Directory
-      </a>
+      <a href="{{ url_for('match_job') }}" class="btn btn-outline-light tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Find Best Match"><i class="bi bi-stars"></i></a>
+      <a href="{{ url_for('staff_list') }}" class="btn btn-outline-light tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Staff Directory"><i class="bi bi-person-badge-fill"></i></a>
       {% if can_audit %}
-      <a href="{{ url_for('audit_log') }}" class="btn btn-outline-light fw-semibold px-3">
-        <i class="bi bi-journal-text me-1"></i> Audit Log
-      </a>
+      <a href="{{ url_for('audit_log') }}" class="btn btn-outline-light tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Audit Log"><i class="bi bi-journal-text"></i></a>
       {% endif %}
       {% if can_users %}
-      <a href="{{ url_for('manage_users') }}" class="btn btn-outline-light fw-semibold px-3">
-        <i class="bi bi-people-fill me-1"></i> Manage Users
-      </a>
-      <a href="{{ url_for('admin_cleanup_content_duplicates') }}" class="btn btn-outline-light fw-semibold px-3">
-        <i class="bi bi-files me-1"></i> Find Duplicates
-      </a>
+      <a href="{{ url_for('manage_users') }}" class="btn btn-outline-light tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Manage Users"><i class="bi bi-people-fill"></i></a>
+      <a href="{{ url_for('admin_cleanup_content_duplicates') }}" class="btn btn-outline-light tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Find Duplicates"><i class="bi bi-files"></i></a>
       {% endif %}
       {% if can_add %}
-      <a href="{{ url_for('add_bulk') }}" class="btn btn-outline-light fw-semibold px-3">
-        <i class="bi bi-upload me-1"></i> Bulk Upload
-      </a>
-      <a href="{{ url_for('add_resume') }}" class="btn btn-light fw-semibold px-4">
-        <i class="bi bi-plus-circle-fill me-1"></i> Add Resume
-      </a>
+      <a href="{{ url_for('add_bulk') }}" class="btn btn-outline-light tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Bulk Upload"><i class="bi bi-upload"></i></a>
+      <a href="{{ url_for('add_resume') }}" class="btn btn-light tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Add Resume"><i class="bi bi-plus-circle-fill"></i></a>
       {% endif %}
       {% if require_login %}
       <form method="POST" action="{{ url_for('logout') }}" class="d-inline m-0">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button type="submit" class="btn btn-outline-light fw-semibold px-3" title="Sign out">
-          <i class="bi bi-box-arrow-right me-1"></i> Sign Out
-        </button>
+        <button type="submit" class="btn btn-outline-light tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Sign Out"><i class="bi bi-box-arrow-right"></i></button>
       </form>
       <div class="dropdown">
         <button class="btn btn-outline-light dropdown-toggle d-flex align-items-center gap-2"
                 type="button" data-bs-toggle="dropdown" aria-expanded="false">
           <i class="bi bi-person-circle"></i>
           <span class="d-none d-md-inline">{{ session.full_name }}</span>
-          <span class="badge bg-warning text-dark" style="font-size:.65rem">{{ ROLE_LABEL }}</span>
         </button>
         <ul class="dropdown-menu dropdown-menu-end shadow">
           <li><h6 class="dropdown-header">{{ session.username }}</h6></li>
@@ -150,9 +133,7 @@
       </div>
       {% endif %}
       {% if can_shutdown %}
-      <button type="button" class="btn btn-danger fw-semibold px-3" onclick="showShutdownModal()">
-        <i class="bi bi-power me-1"></i> Close Program
-      </button>
+      <button type="button" class="btn btn-danger tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Close Program" onclick="showShutdownModal()"><i class="bi bi-power"></i></button>
       {% endif %}
     </div>
   </div>
@@ -770,6 +751,18 @@ document.querySelectorAll('#filterForm input, #filterForm select').forEach(el =>
     };
   })();
   /*csrf-shim*/
+</script>
+
+<script>
+  // Init Bootstrap tooltips on the navbar icon buttons. /*tooltip-init*/
+  (function(){
+    if (window.__tooltipsInit) return;
+    window.__tooltipsInit = true;
+    document.addEventListener('DOMContentLoaded', function(){
+      document.querySelectorAll('[data-bs-toggle="tooltip"]')
+        .forEach(function(el){ new bootstrap.Tooltip(el, { delay: { show: 200, hide: 50 } }); });
+    });
+  })();
 </script>
 </body>
 </html>
