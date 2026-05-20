@@ -375,3 +375,22 @@ body {
 .tc-nav-icon.btn-sm i.bi {
   font-size: 1.05rem;
 }
+
+/* ── Navbar button tooltips — make the label clearly readable and keep it
+   far enough from the cursor that the hand-pointer doesn't obscure it. ── */
+.tooltip.tc-tooltip .tooltip-inner {
+  font-size: 0.9rem;
+  font-weight: 600;
+  padding: 8px 14px;
+  background-color: #1f2937;     /* dark slate — high contrast */
+  color: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  max-width: none;
+}
+.tooltip.tc-tooltip .tooltip-arrow::before {
+  border-bottom-color: #1f2937;  /* matches inner bg for bottom placement */
+  border-top-color:    #1f2937;
+}
