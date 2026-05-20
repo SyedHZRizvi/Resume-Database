@@ -559,6 +559,22 @@ def init_db():
 
         conn.commit()
 
+        # ── Row Level Security (Postgres / Supabase only) ────────────────────
+        # Supabase exposes every table in `public` through PostgREST. Without
+        # RLS, anyone holding the anon API key could read these tables from a
+        # browser. Our Flask app connects as the table owner, which bypasses
+        # RLS, so enabling it is safe — anon/authenticated REST calls are
+        # denied (no policies), service-role + owner connections keep working.
+        if _db.db_dialect() == 'postgres':
+            _rls_tables = ('applicants', 'users', 'audit_log',
+                           'interviews', 'staff', 'indeed_poll_status')
+            for _t in _rls_tables:
+                try:
+                    conn.execute(f'ALTER TABLE {_t} ENABLE ROW LEVEL SECURITY')
+                except Exception as _e:
+                    print(f'   [rls] could not enable on {_t}: {_e}')
+            conn.commit()
+
 
 def create_default_admin():
     """Create the default super_admin account on first run if no users exist."""
