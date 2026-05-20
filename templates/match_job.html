@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <meta name="csrf-token" content="{{ csrf_token() }}">
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Find Best Matches — Resume Database</title>
@@ -140,6 +141,7 @@
         <span class="badge bg-warning text-dark ms-1">{{ ROLE_LABEL }}</span>
       </span>
       <form method="POST" action="{{ url_for('logout') }}" class="d-inline m-0">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="btn btn-outline-light btn-sm" title="Sign out">
           <i class="bi bi-box-arrow-right me-1"></i>Sign Out
         </button>
@@ -182,6 +184,7 @@
     </div>
     <div class="card-body p-4">
       <form method="POST" action="{{ url_for('match_job') }}" id="matchForm">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <label for="jd_text" class="form-label fw-semibold mb-2">
           <i class="bi bi-pencil-square text-primary me-1"></i>
           Paste job description or requirements

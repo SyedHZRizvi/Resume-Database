@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <meta name="csrf-token" content="{{ csrf_token() }}">
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Edit — {{ applicant.name }} — Resume Database</title>
@@ -31,6 +32,7 @@
       </a>
       {% if require_login %}
       <form method="POST" action="{{ url_for('logout') }}" class="d-inline m-0">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="btn btn-outline-light fw-semibold px-3" title="Sign out">
           <i class="bi bi-box-arrow-right me-1"></i> Sign Out
         </button>
@@ -56,6 +58,7 @@
           <li><hr class="dropdown-divider"></li>
           <li>
             <form method="POST" action="{{ url_for('logout') }}" class="d-inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit" class="dropdown-item text-danger">
                 <i class="bi bi-box-arrow-right me-2"></i>Sign Out
               </button>
@@ -99,6 +102,7 @@
 
   <!-- ── Form ─────────────────────────────────────────────────────────────── -->
   <form method="POST" enctype="multipart/form-data" id="editForm">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
     <!-- Section 1: Personal Information -->
     <div class="card border-0 shadow-sm mb-4">
@@ -569,6 +573,32 @@ document.getElementById('editForm').addEventListener('submit', function () {
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span> Saving…';
 });
+</script>
+
+<script>
+  // CSRF: auto-attach X-CSRFToken to every same-origin non-GET fetch().
+  // Reads the token from <meta name="csrf-token">. Idempotent — marker /*csrf-shim*/.
+  (function(){
+    if (window.__csrfShimInstalled) return;
+    window.__csrfShimInstalled = true;
+    var meta = document.querySelector('meta[name="csrf-token"]');
+    var token = meta ? meta.getAttribute('content') : '';
+    var _fetch = window.fetch;
+    window.fetch = function(input, init){
+      init = init || {};
+      var method = (init.method || (typeof input === 'object' && input.method) || 'GET').toUpperCase();
+      if (token && method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+        var url = (typeof input === 'string') ? input : (input && input.url) || '';
+        var sameOrigin = !/^https?:\/\//i.test(url) || url.indexOf(location.origin) === 0;
+        if (sameOrigin) {
+          init.headers = new Headers(init.headers || {});
+          if (!init.headers.has('X-CSRFToken')) init.headers.set('X-CSRFToken', token);
+        }
+      }
+      return _fetch.call(this, input, init);
+    };
+  })();
+  /*csrf-shim*/
 </script>
 </body>
 </html>

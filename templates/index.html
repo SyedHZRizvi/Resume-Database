@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <meta name="csrf-token" content="{{ csrf_token() }}">
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TransCrypts — Resume Database</title>
@@ -105,6 +106,7 @@
       {% endif %}
       {% if require_login %}
       <form method="POST" action="{{ url_for('logout') }}" class="d-inline m-0">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="btn btn-outline-light fw-semibold px-3" title="Sign out">
           <i class="bi bi-box-arrow-right me-1"></i> Sign Out
         </button>
@@ -139,6 +141,7 @@
           <li><hr class="dropdown-divider"></li>
           <li>
             <form method="POST" action="{{ url_for('logout') }}" class="d-inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit" class="dropdown-item text-danger">
                 <i class="bi bi-box-arrow-right me-2"></i>Sign Out</button>
             </form>
@@ -693,6 +696,7 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <form id="deleteForm" method="POST">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="modal-body pt-2">
         <p class="mb-1">Permanently delete the resume for:</p>
         <p class="fw-bold fs-5 mb-3" id="deleteApplicantName"></p>
@@ -740,6 +744,32 @@ function confirmDelete(id, name) {
 document.querySelectorAll('#filterForm input, #filterForm select').forEach(el => {
   el.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('filterForm').submit(); });
 });
+</script>
+
+<script>
+  // CSRF: auto-attach X-CSRFToken to every same-origin non-GET fetch().
+  // Reads the token from <meta name="csrf-token">. Idempotent — marker /*csrf-shim*/.
+  (function(){
+    if (window.__csrfShimInstalled) return;
+    window.__csrfShimInstalled = true;
+    var meta = document.querySelector('meta[name="csrf-token"]');
+    var token = meta ? meta.getAttribute('content') : '';
+    var _fetch = window.fetch;
+    window.fetch = function(input, init){
+      init = init || {};
+      var method = (init.method || (typeof input === 'object' && input.method) || 'GET').toUpperCase();
+      if (token && method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+        var url = (typeof input === 'string') ? input : (input && input.url) || '';
+        var sameOrigin = !/^https?:\/\//i.test(url) || url.indexOf(location.origin) === 0;
+        if (sameOrigin) {
+          init.headers = new Headers(init.headers || {});
+          if (!init.headers.has('X-CSRFToken')) init.headers.set('X-CSRFToken', token);
+        }
+      }
+      return _fetch.call(this, input, init);
+    };
+  })();
+  /*csrf-shim*/
 </script>
 </body>
 </html>

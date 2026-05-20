@@ -247,6 +247,50 @@ DATABASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'resumes.db'
 REMEMBER_ME_DAYS = 365
 app.permanent_session_lifetime = timedelta(days=REMEMBER_ME_DAYS)
 
+# ─── Security hardening ───────────────────────────────────────────────────────
+# 1. Trust the X-Forwarded-* headers set by Render's load balancer so that
+#    request.remote_addr returns the real client IP (used for rate limiting)
+#    and url_for(_external=True) generates https:// URLs.
+from werkzeug.middleware.proxy_fix import ProxyFix
+_IS_PROD = bool((os.environ.get('DATABASE_URL') or '').strip())
+if _IS_PROD:
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+# 2. Session cookie hardening. Secure flag only in production (HTTPS); local
+#    dev keeps HTTP working. SameSite=Lax blocks cross-site POSTs/redirects
+#    from sending the session cookie while still allowing normal navigation.
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+    SESSION_COOKIE_SECURE=_IS_PROD,
+)
+
+# 3. CSRF protection on every state-changing request. /api/careers/apply is
+#    exempt because it's a public endpoint authenticated by X-API-Key, not
+#    by browser session cookies. AJAX callers send the token via either a
+#    csrf_token form field or the X-CSRFToken header (default Flask-WTF
+#    behaviour; templates that fetch() include the token from a meta tag).
+from flask_wtf.csrf import CSRFProtect, CSRFError, generate_csrf
+csrf = CSRFProtect(app)
+app.config['WTF_CSRF_TIME_LIMIT'] = None     # session lifetime is the limit
+
+@app.errorhandler(CSRFError)
+def _handle_csrf_error(e):
+    return ('CSRF token missing or invalid. Refresh the page and try again.',
+            400)
+
+# Expose csrf_token() everywhere so templates can include it without each
+# route having to pass it explicitly.
+@app.context_processor
+def _inject_csrf():
+    return dict(csrf_token=generate_csrf)
+
+# 4. Per-IP rate limiting. Stricter on /login (decorated explicitly below).
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+limiter = Limiter(get_remote_address, app=app,
+                  default_limits=['600/hour'], storage_uri='memory://')
+
 # ── TransCrypts logo for emails (loaded as raw bytes; sent as CID attachment) ──
 # Gmail and most email clients block data: URIs, but CID (Content-ID) inline
 # attachments are fully supported everywhere.  The bytes are attached to the
@@ -565,7 +609,7 @@ def init_db():
         # browser. Our Flask app connects as the table owner, which bypasses
         # RLS, so enabling it is safe — anon/authenticated REST calls are
         # denied (no policies), service-role + owner connections keep working.
-        if _db.db_dialect() == 'postgres':
+        if _db.dialect() == 'postgres':
             _rls_tables = ('applicants', 'users', 'audit_log',
                            'interviews', 'staff', 'indeed_poll_status')
             for _t in _rls_tables:
@@ -575,23 +619,64 @@ def init_db():
                     print(f'   [rls] could not enable on {_t}: {_e}')
             conn.commit()
 
+            # ── Audit log tamper protection ────────────────────────────────
+            # The application never updates or deletes audit_log rows.
+            # Enforce that at the DB level so even a SQL-injection bug or a
+            # rogue admin connecting via psql can't rewrite history.
+            try:
+                conn.execute('''
+                    CREATE OR REPLACE FUNCTION reject_audit_log_change()
+                    RETURNS trigger AS $$
+                    BEGIN
+                        RAISE EXCEPTION 'audit_log is append-only';
+                    END;
+                    $$ LANGUAGE plpgsql;
+                ''')
+                conn.execute('DROP TRIGGER IF EXISTS audit_log_no_update ON audit_log')
+                conn.execute('''
+                    CREATE TRIGGER audit_log_no_update
+                    BEFORE UPDATE OR DELETE ON audit_log
+                    FOR EACH ROW EXECUTE FUNCTION reject_audit_log_change()
+                ''')
+                conn.commit()
+            except Exception as _e:
+                print(f'   [audit] could not install trigger: {_e}')
+
 
 def create_default_admin():
-    """Create the default super_admin account on first run if no users exist."""
+    """Create the default super_admin account on first run if no users exist.
+
+    Hardening rules:
+      • In production (DATABASE_URL set) we refuse to create the well-known
+        admin/admin123 account unless ALLOW_DEFAULT_ADMIN=1 is explicitly
+        opted in. This prevents an empty Supabase DB from briefly exposing
+        the documented default credentials to the public Render URL.
+      • The account is created with must_change_password=1 so the very first
+        login is forced through /change-password before any other route is
+        accessible (existing middleware enforces this).
+    """
+    if _IS_PROD and os.environ.get('ALLOW_DEFAULT_ADMIN', '').strip() != '1':
+        # In production, the operator should provision the first admin via
+        # a one-time SQL insert (or a dedicated bootstrap command), not via
+        # a baked-in default password. Skip silently — the login page will
+        # display "Incorrect username or password" until a user is created.
+        return
     with get_db() as conn:
         count = conn.execute('SELECT COUNT(*) FROM users').fetchone()[0]
         if count == 0:
             conn.execute('''
-                INSERT INTO users (username, password_hash, full_name, role)
-                VALUES (?, ?, ?, ?)
-            ''', ('admin', generate_password_hash('admin123'), 'Administrator', 'super_admin'))
+                INSERT INTO users (username, password_hash, full_name, role,
+                                   must_change_password)
+                VALUES (?, ?, ?, ?, 1)
+            ''', ('admin', generate_password_hash('admin123'),
+                  'Administrator', 'super_admin'))
             conn.commit()
             print()
             print("   *** FIRST-TIME SETUP ***")
             print("   Default admin account created:")
             print("   Username : admin")
             print("   Password : admin123")
-            print("   Please change the password after your first login!")
+            print("   You MUST change the password on first login.")
             print()
 
 
@@ -1013,7 +1098,24 @@ def find_identity_match(name='', email='', phone='', exclude_id=None):
 
 # ─── Auth routes ──────────────────────────────────────────────────────────────
 
+def _is_safe_next_url(target: str) -> bool:
+    """Reject protocol-relative URLs ('//evil.com/path') and absolute URLs.
+    Only same-host relative paths are allowed as login redirect targets."""
+    if not target:
+        return False
+    if target.startswith('//') or target.startswith('\\\\'):
+        return False
+    return target.startswith('/')
+
+
+# Constant-time generic message used for ALL failed-login paths (unknown
+# user, locked account, bad password). This blocks username enumeration
+# and pre-auth disclosure of lockout state.
+_GENERIC_LOGIN_ERROR = 'Incorrect username or password.'
+
+
 @app.route('/login', methods=['GET', 'POST'])
+@limiter.limit('10/minute;100/hour', methods=['POST'])
 def login():
     if 'user_id' in session:
         return redirect(url_for('index'))
@@ -1029,18 +1131,22 @@ def login():
             ).fetchone()
 
             if not user:
-                flash('Incorrect username or password.', 'error')
+                # Equalise timing vs. the password-hash path so unknown
+                # usernames don't return noticeably faster than known ones.
+                check_password_hash(
+                    'pbkdf2:sha256:600000$x$0' * 1, 'dummy'
+                )
+                flash(_GENERIC_LOGIN_ERROR, 'error')
                 return render_template('login.html', next=next_url)
 
             # ── Check if account is currently locked ──────────────────────
-            # locked_until is stored as an ISO datetime string.
-            # If current time is still before locked_until, deny entry.
+            # locked_until is stored as an ISO datetime string. We treat a
+            # locked account the same as a wrong password to avoid leaking
+            # which usernames have active lockouts.
             if user['locked_until']:
                 lock_time = datetime.fromisoformat(user['locked_until'])
                 if datetime.now() < lock_time:
-                    remaining = max(1, int((lock_time - datetime.now()).seconds / 60) + 1)
-                    flash(f'Account is locked after too many failed attempts. '
-                          f'Please try again in {remaining} minute(s).', 'error')
+                    flash(_GENERIC_LOGIN_ERROR, 'error')
                     return render_template('login.html', next=next_url)
                 else:
                     # Lockout has expired — reset the counter automatically
@@ -1077,23 +1183,17 @@ def login():
                            f'Role: {ROLES.get(user["role"], user["role"])}'
                            + (' [Remember Me]' if remember_me else ''))
                 flash(f'Welcome, {user["full_name"] or user["username"]}!', 'success')
-                return redirect(next_url if next_url and next_url.startswith('/') else url_for('index'))
+                return redirect(next_url if _is_safe_next_url(next_url) else url_for('index'))
             else:
-                # Wrong password — increment failure counter
-                # Programming concept — progressive lockout:
-                # Each wrong attempt increments a counter. When it hits the
-                # limit, we calculate a future datetime for when the lock expires
-                # and store it. The user sees a countdown, not just "wrong password".
+                # Wrong password — increment failure counter silently and
+                # show the same generic message regardless of remaining
+                # attempts or lockout state (no enumeration of valid users).
                 attempts = (user['failed_attempts'] or 0) + 1
                 locked_until = None
                 if attempts >= MAX_LOGIN_ATTEMPTS:
                     locked_until = (datetime.now() + timedelta(minutes=15)).strftime('%Y-%m-%d %H:%M:%S')
-                    flash(f'Too many failed attempts. Account locked for 15 minutes.', 'error')
                     log_action('ACCOUNT LOCKED', username, f'{attempts} failed attempts')
-                else:
-                    remaining_attempts = MAX_LOGIN_ATTEMPTS - attempts
-                    flash(f'Incorrect password. {remaining_attempts} attempt(s) remaining '
-                          f'before account is locked.', 'error')
+                flash(_GENERIC_LOGIN_ERROR, 'error')
                 conn.execute(
                     'UPDATE users SET failed_attempts=?, locked_until=? WHERE id=?',
                     (attempts, locked_until, user['id'])
@@ -2404,9 +2504,14 @@ def uploaded_file(filename):
         if not signed:
             flash('File not found in storage.', 'error')
             return redirect(url_for('index'))
-        return redirect(signed)
-    # Local: serve from disk directly
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+        # Force browser-side download instead of inline rendering. A PDF
+        # uploaded with embedded JavaScript or an HTML file masquerading
+        # as PDF would otherwise execute in our origin.
+        sep = '&' if '?' in signed else '?'
+        return redirect(f'{signed}{sep}download=1')
+    # Local: send with Content-Disposition: attachment for the same reason.
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename,
+                                as_attachment=True)
 
 
 # ─── Interview routes ──────────────────────────────────────────────────────────
@@ -4433,15 +4538,37 @@ def _check_rate_limit(ip: str) -> bool:
 
 
 @app.after_request
-def _add_cors_headers(response):
-    """Allow cross-origin POSTs from the company website."""
-    response.headers['Access-Control-Allow-Origin']  = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, X-API-Key'
+def _add_security_and_cors_headers(response):
+    """Emit security headers on every response; CORS only on the public
+    careers endpoints (everything else is same-origin and shouldn't be
+    reachable cross-site)."""
+    # ── Security headers (every response) ───────────────────────────────
+    # HSTS only in production — it would break local HTTP dev otherwise.
+    if _IS_PROD:
+        response.headers.setdefault(
+            'Strict-Transport-Security',
+            'max-age=31536000; includeSubDomains'
+        )
+    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    response.headers.setdefault('X-Frame-Options',        'DENY')
+    response.headers.setdefault('Referrer-Policy',        'same-origin')
+    response.headers.setdefault('Permissions-Policy',
+                                'geolocation=(), microphone=(), camera=()')
+
+    # ── CORS — only on public cross-origin endpoints (careers form on
+    # the marketing site, Indeed bookmarklet running on indeed.com). Both
+    # are API-key authenticated, not session-authenticated, so widening
+    # CORS here doesn't expose anything that wasn't already public.
+    if (request.path.startswith('/api/careers/') or
+            request.path.startswith('/api/indeed/')):
+        response.headers['Access-Control-Allow-Origin']  = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, X-API-Key'
     return response
 
 
 @app.route('/api/careers/apply', methods=['POST', 'OPTIONS'])
+@csrf.exempt
 def api_careers_apply():
     """
     Public endpoint — receives a career application from the website.
@@ -4460,8 +4587,10 @@ def api_careers_apply():
                             'message': 'Unauthorized — invalid API key.'}), 401
 
     # ── Rate limit by IP ─────────────────────────────────────────────────────
-    client_ip = request.headers.get('X-Forwarded-For',
-                                     request.remote_addr or '0.0.0.0').split(',')[0].strip()
+    # ProxyFix has already populated request.remote_addr with the real
+    # client IP from the trusted X-Forwarded-For header, so we use that
+    # directly. Reading the raw header would let any client spoof their IP.
+    client_ip = request.remote_addr or '0.0.0.0'
     if not _check_rate_limit(client_ip):
         return jsonify({'ok': False,
                         'message': 'Too many submissions. Please try again later.'}), 429
@@ -5974,6 +6103,7 @@ def admin_indeed_inbox():
 # pipeline so imported candidates land in the same place as everything else.
 
 @app.route('/api/indeed/import', methods=['POST', 'OPTIONS'])
+@csrf.exempt
 def api_indeed_import():
     """Public token-authenticated endpoint for the Indeed bookmarklet.
 
