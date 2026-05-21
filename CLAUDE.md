@@ -226,6 +226,70 @@ best-effort deletes every file from storage and removes the rows. If a
 storage deletion fails, the file becomes an orphan (logged), but the DB
 stays consistent.
 
+### 2.6 Office supplies inventory
+
+A lightweight HR/ops tool for tracking office consumables (paper, toner,
+coffee, sanitiser, etc.). Lives in two tables:
+
+```
+supplies:
+  id, name, category, unit, current_qty, reorder_threshold,
+  preferred_vendor, last_restocked_at, notes,
+  active        -- 1 = visible in the list, 0 = soft-deleted
+  created_at
+
+supply_movements:
+  id, supply_id (FK → supplies.id),
+  delta          -- signed integer (negative for Consumed, positive for Restock)
+  reason         -- enum from SUPPLY_MOVEMENT_REASONS (default 'Adjustment')
+  note           -- free text
+  staff_username -- who made the change
+  created_at
+```
+
+**Categories** — `SUPPLY_CATEGORIES = ('Stationery', 'Pantry', 'Cleaning',
+'IT', 'Other')`. **Reasons** — `SUPPLY_MOVEMENT_REASONS = ('Restock',
+'Consumed', 'Adjustment')`. Both enums are rendered as single-select
+chip groups in templates/supplies.html and **must stay in sync** — adding
+a new category requires updating the tuple in app.py AND adding a chip
+with a matching icon in the template (Add card, filter bar, AND Edit
+modal). Adding a new reason requires updating the tuple AND a chip in
+the Adjust modal AND a matching `.tc-move-<slug>` colour rule.
+
+**Role gate** — every route (`/supplies`, `/supplies/add`,
+`/supplies/<id>/edit`, `/supplies/<id>/adjust`, `/supplies/<id>/delete`,
+`/supplies/<id>/history`) is `@role_required(*CAN_STAFF)`. The page is
+not visible to recruiters / viewers / hiring managers.
+
+**Navbar entry** — a `bi-boxes` icon button on the home dashboard
+(templates/index.html), placed between Staff Directory and Audit Log,
+gated by `{% if can_staff %}`. (The `can_staff` flag is exposed by the
+global context processor — added alongside this feature.) Sub-pages
+have a Home icon and Sign Out icon following the staff.html pattern;
+no other navbars carry the supplies entry.
+
+**Soft-delete** — `/supplies/<id>/delete` flips `active=0` and never
+issues a SQL `DELETE`. This keeps every historical `supply_movements`
+row interpretable and preserves the audit trail. There is no "restore"
+UI today — once soft-deleted the row is hidden from the list.
+
+**Low-stock cue** — when `current_qty <= reorder_threshold` the row
+shows a red pill (`.tc-stock-low`) with the warning icon, and these
+rows sort first in the table. Otherwise it shows the muted green
+`.tc-stock-ok` indicator. The list page header also surfaces a count
+of low-stock items.
+
+**Sign rules in /adjust** — Consumed always stores a negative delta,
+Restock always stores a positive delta, Adjustment keeps whatever sign
+the user typed. The route normalises this server-side so a tampered
+form cannot, for example, register a "Consumed +5" that increases
+stock. `current_qty` is clamped at zero (never negative).
+
+**Restock side-effect** — when `reason == 'Restock'` the route updates
+`supplies.last_restocked_at` to the current local timestamp. The Add
+form also records an opening-stock Restock movement on day one when the
+starting quantity is non-zero.
+
 ---
 
 ## 3. Design tokens — match these when adding new UI

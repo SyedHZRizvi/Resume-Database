@@ -309,6 +309,52 @@ def check_staff_documents(app_src: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# §10b  Office supplies — schema + constants + routes + template + CSS
+# ─────────────────────────────────────────────────────────────────────────────
+def check_supplies(app_src: str) -> None:
+    section('Office supplies — schema + constants + routes')
+    must_match(app_src, 'CREATE TABLE IF NOT EXISTS supplies',
+               'supplies table created in init_db')
+    must_match(app_src, 'CREATE TABLE IF NOT EXISTS supply_movements',
+               'supply_movements table created in init_db')
+    must_match(app_src,
+               "SUPPLY_CATEGORIES = ('Stationery', 'Pantry', 'Cleaning', 'IT', 'Other')",
+               'SUPPLY_CATEGORIES enum unchanged')
+    must_match(app_src,
+               "SUPPLY_MOVEMENT_REASONS = ('Restock', 'Consumed', 'Adjustment')",
+               'SUPPLY_MOVEMENT_REASONS enum unchanged')
+    must_match(app_src, 'def _validate_supply_category',
+               '_validate_supply_category() helper defined')
+    must_match(app_src, 'def _validate_movement_reason',
+               '_validate_movement_reason() helper defined')
+    # Every POST route is @role_required(*CAN_STAFF)
+    must_regex(app_src,
+               r"@app\.route\('/supplies/add',\s*methods=\['POST'\]\)\s*\n@role_required\(\*CAN_STAFF\)",
+               '/supplies/add is @role_required(*CAN_STAFF)')
+    must_regex(app_src,
+               r"@app\.route\('/supplies/<int:supply_id>/edit',\s*methods=\['POST'\]\)\s*\n@role_required\(\*CAN_STAFF\)",
+               '/supplies/<id>/edit is @role_required(*CAN_STAFF)')
+    must_regex(app_src,
+               r"@app\.route\('/supplies/<int:supply_id>/adjust',\s*methods=\['POST'\]\)\s*\n@role_required\(\*CAN_STAFF\)",
+               '/supplies/<id>/adjust is @role_required(*CAN_STAFF)')
+    must_regex(app_src,
+               r"@app\.route\('/supplies/<int:supply_id>/delete',\s*methods=\['POST'\]\)\s*\n@role_required\(\*CAN_STAFF\)",
+               '/supplies/<id>/delete is @role_required(*CAN_STAFF)')
+    must_regex(app_src,
+               r"@app\.route\('/supplies/<int:supply_id>/history'\)\s*\n@role_required\(\*CAN_STAFF\)",
+               '/supplies/<id>/history is @role_required(*CAN_STAFF)')
+    # The list page route exists too
+    must_regex(app_src,
+               r"@app\.route\('/supplies'\)\s*\n@role_required\(\*CAN_STAFF\)",
+               '/supplies (list) is @role_required(*CAN_STAFF)')
+    # Template file is present
+    if (TEMPLATES / 'supplies.html').exists():
+        ok('templates/supplies.html present')
+    else:
+        fail('templates/supplies.html missing')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # §11  CSS — required design-token classes
 # ─────────────────────────────────────────────────────────────────────────────
 def check_css(css_src: str) -> None:
@@ -318,7 +364,9 @@ def check_css(css_src: str) -> None:
                 '.tc-notes-cell',
                 # Employment-status badge classes (added 2026-05-21)
                 '.tc-status-badge', '.tc-status-active',
-                '.tc-status-on-leave', '.tc-status-exited'):
+                '.tc-status-on-leave', '.tc-status-exited',
+                # Office-supplies tokens
+                '.tc-stock-low', '.tc-move-badge'):
         must_match(css_src, cls, f'{cls} class defined')
 
 
@@ -471,6 +519,7 @@ def main() -> int:
         check_permissions(app_src)
         check_staff_columns(app_src)
         check_staff_documents(app_src)
+        check_supplies(app_src)
     if css_src:
         check_css(css_src)
     check_templates()

@@ -406,6 +406,7 @@ def inject_globals():
         can_delete    = role in CAN_DELETE,
         can_download  = role in CAN_DOWNLOAD,
         can_audit     = role in CAN_AUDIT,
+        can_staff     = role in CAN_STAFF,
         can_users     = role in CAN_USERS,
         can_shutdown  = role in CAN_SHUTDOWN,
         ROLES         = ROLES,
@@ -640,6 +641,57 @@ def init_db():
                 'CREATE INDEX IF NOT EXISTS idx_staff_documents_staff_id '
                 'ON staff_documents (staff_id)'
             )
+        except Exception:
+            pass
+
+        # ── Office supplies inventory ────────────────────────────────────────
+        # Tracks consumables (paper, toner, coffee, sanitiser, etc.) for HR/ops:
+        # current quantity on hand, the reorder threshold (highlights low stock
+        # in the UI when current_qty <= reorder_threshold), preferred vendor
+        # and free-text notes. Soft-deleted via `active=0` so historical
+        # movements remain readable. Category is a controlled enum
+        # (SUPPLY_CATEGORIES) kept in sync with the chip list in
+        # templates/supplies.html.
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS supplies (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                name                  TEXT NOT NULL,
+                category              TEXT NOT NULL DEFAULT 'Other',
+                unit                  TEXT,
+                current_qty           INTEGER DEFAULT 0,
+                reorder_threshold     INTEGER DEFAULT 0,
+                preferred_vendor      TEXT,
+                last_restocked_at     TEXT,
+                notes                 TEXT,
+                active                INTEGER DEFAULT 1,
+                created_at            TEXT DEFAULT (datetime('now','localtime'))
+            )
+        ''')
+        try:
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_supplies_active ON supplies (active)')
+        except Exception:
+            pass
+
+        # ── Supply movements (audit trail of every quantity change) ──────────
+        # Every restock / consumption / adjustment writes one row here. The
+        # `delta` is signed (negative for Consumed, positive for Restock,
+        # either sign for Adjustment). Reason is a controlled enum
+        # (SUPPLY_MOVEMENT_REASONS). Surfaced in the History modal in the
+        # supplies page (last 50 movements per supply).
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS supply_movements (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                supply_id       INTEGER NOT NULL,
+                delta           INTEGER NOT NULL,
+                reason          TEXT NOT NULL DEFAULT 'Adjustment',
+                note            TEXT,
+                staff_username  TEXT,
+                created_at      TEXT DEFAULT (datetime('now','localtime')),
+                FOREIGN KEY (supply_id) REFERENCES supplies(id)
+            )
+        ''')
+        try:
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_supply_movements_supply ON supply_movements (supply_id, created_at)')
         except Exception:
             pass
 
@@ -4804,6 +4856,265 @@ def api_staff():
             'SELECT name, email, designation FROM staff ORDER BY name COLLATE NOCASE ASC'
         ).fetchall()
     return jsonify([dict(r) for r in rows])
+
+
+# ─── Office Supplies Inventory ────────────────────────────────────────────────
+#
+# Lightweight HR/ops tool to track office consumables (paper, toner, coffee,
+# cleaning, etc.). Two tables — `supplies` (one row per stock-keeping unit)
+# and `supply_movements` (append-only audit of every quantity change). All
+# routes are gated by CAN_STAFF (super_admin / hr_manager). The categories
+# and movement reasons are controlled enums and must stay in sync with the
+# chip groups in templates/supplies.html.
+
+SUPPLY_CATEGORIES = ('Stationery', 'Pantry', 'Cleaning', 'IT', 'Other')
+SUPPLY_MOVEMENT_REASONS = ('Restock', 'Consumed', 'Adjustment')
+
+
+def _validate_supply_category(raw: str) -> str:
+    s = (raw or '').strip()
+    return s if s in SUPPLY_CATEGORIES else 'Other'
+
+
+def _validate_movement_reason(raw: str) -> str:
+    s = (raw or '').strip()
+    return s if s in SUPPLY_MOVEMENT_REASONS else 'Adjustment'
+
+
+def _safe_int(raw, default: int = 0) -> int:
+    """Best-effort int parse — returns `default` on garbage input."""
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+@app.route('/supplies')
+@role_required(*CAN_STAFF)
+def supplies_list():
+    """List active supplies, low-stock first, then by name. Optional
+    `?cat=` query param filters to one category."""
+    f_cat = (request.args.get('cat') or '').strip()
+    # Validate filter against the enum so weird values just become "All"
+    if f_cat and f_cat not in SUPPLY_CATEGORIES:
+        f_cat = ''
+
+    with get_db() as conn:
+        if f_cat:
+            rows = conn.execute(
+                'SELECT * FROM supplies WHERE active=1 AND category=? '
+                'ORDER BY (CASE WHEN current_qty <= reorder_threshold THEN 0 ELSE 1 END), '
+                'name COLLATE NOCASE ASC',
+                (f_cat,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                'SELECT * FROM supplies WHERE active=1 '
+                'ORDER BY (CASE WHEN current_qty <= reorder_threshold THEN 0 ELSE 1 END), '
+                'name COLLATE NOCASE ASC'
+            ).fetchall()
+    low_count = sum(
+        1 for r in rows if (r['current_qty'] or 0) <= (r['reorder_threshold'] or 0)
+    )
+    return render_template('supplies.html',
+                           supplies=rows,
+                           low_count=low_count,
+                           filter_cat=f_cat,
+                           supply_categories=SUPPLY_CATEGORIES,
+                           supply_movement_reasons=SUPPLY_MOVEMENT_REASONS)
+
+
+@app.route('/supplies/add', methods=['POST'])
+@role_required(*CAN_STAFF)
+def supplies_add():
+    f = request.form
+    name              = f.get('name', '').strip()
+    category          = _validate_supply_category(f.get('category', ''))
+    unit              = f.get('unit', '').strip()
+    current_qty       = max(0, _safe_int(f.get('current_qty'), 0))
+    reorder_threshold = max(0, _safe_int(f.get('reorder_threshold'), 0))
+    preferred_vendor  = f.get('preferred_vendor', '').strip()
+    notes             = f.get('notes', '').strip()
+    if not name:
+        flash('Name is required.', 'error')
+        return redirect(url_for('supplies_list'))
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    with get_db() as conn:
+        cur = conn.execute(
+            'INSERT INTO supplies (name, category, unit, current_qty, '
+            'reorder_threshold, preferred_vendor, notes, '
+            'last_restocked_at, active) VALUES (?,?,?,?,?,?,?,?,1)',
+            (name, category, unit, current_qty, reorder_threshold,
+             preferred_vendor, notes,
+             now_str if current_qty > 0 else None)
+        )
+        # Record the opening stock as an Adjustment movement so the history is
+        # complete from day one.
+        if current_qty > 0:
+            new_id = cur.lastrowid
+            try:
+                conn.execute(
+                    'INSERT INTO supply_movements (supply_id, delta, reason, '
+                    'note, staff_username) VALUES (?,?,?,?,?)',
+                    (new_id, current_qty, 'Restock', 'Opening stock',
+                     session.get('username', 'system'))
+                )
+            except Exception as e:
+                print(f'[supplies] could not record opening movement: {e}')
+        conn.commit()
+    log_action('SUPPLY ADDED', name,
+               f'category={category}, qty={current_qty}, threshold={reorder_threshold}')
+    flash(f'{name} added to supplies.', 'success')
+    return redirect(url_for('supplies_list'))
+
+
+@app.route('/supplies/<int:supply_id>/edit', methods=['POST'])
+@role_required(*CAN_STAFF)
+def supplies_edit(supply_id):
+    """Edit metadata only — quantity changes go through /adjust so we keep
+    a clean audit trail of every stock movement."""
+    f = request.form
+    name              = f.get('name', '').strip()
+    category          = _validate_supply_category(f.get('category', ''))
+    unit              = f.get('unit', '').strip()
+    reorder_threshold = max(0, _safe_int(f.get('reorder_threshold'), 0))
+    preferred_vendor  = f.get('preferred_vendor', '').strip()
+    notes             = f.get('notes', '').strip()
+    if not name:
+        flash('Name is required.', 'error')
+        return redirect(url_for('supplies_list'))
+    with get_db() as conn:
+        row = conn.execute(
+            'SELECT name FROM supplies WHERE id=? AND active=1',
+            (supply_id,)
+        ).fetchone()
+        if not row:
+            flash('Supply not found.', 'error')
+            return redirect(url_for('supplies_list'))
+        conn.execute(
+            'UPDATE supplies SET name=?, category=?, unit=?, '
+            'reorder_threshold=?, preferred_vendor=?, notes=? '
+            'WHERE id=? AND active=1',
+            (name, category, unit, reorder_threshold, preferred_vendor,
+             notes, supply_id)
+        )
+        conn.commit()
+    log_action('SUPPLY EDITED', name,
+               f'category={category}, threshold={reorder_threshold}')
+    flash(f'{name} updated.', 'success')
+    return redirect(url_for('supplies_list'))
+
+
+@app.route('/supplies/<int:supply_id>/adjust', methods=['POST'])
+@role_required(*CAN_STAFF)
+def supplies_adjust(supply_id):
+    """Record a stock movement and update current_qty. The reason controls
+    the sign — Consumed is always negative, Restock is always positive,
+    Adjustment can be either."""
+    f = request.form
+    reason = _validate_movement_reason(f.get('reason', ''))
+    delta  = _safe_int(f.get('delta'), 0)
+    note   = f.get('note', '').strip()
+
+    # Sign rules per reason — server-side normalisation so a client-side
+    # typo (e.g. "Consumed +5") never silently increases stock.
+    if reason == 'Consumed':
+        delta = -abs(delta)
+    elif reason == 'Restock':
+        delta = abs(delta)
+    # Adjustment keeps whatever sign the user typed.
+
+    if delta == 0:
+        flash('Delta must be non-zero.', 'error')
+        return redirect(url_for('supplies_list'))
+
+    with get_db() as conn:
+        row = conn.execute(
+            'SELECT id, name, current_qty FROM supplies '
+            'WHERE id=? AND active=1', (supply_id,)
+        ).fetchone()
+        if not row:
+            flash('Supply not found.', 'error')
+            return redirect(url_for('supplies_list'))
+
+        new_qty = (row['current_qty'] or 0) + delta
+        # Clamp at zero so we never store a negative inventory count.
+        if new_qty < 0:
+            new_qty = 0
+
+        if reason == 'Restock':
+            now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            conn.execute(
+                'UPDATE supplies SET current_qty=?, last_restocked_at=? '
+                'WHERE id=?',
+                (new_qty, now_str, supply_id)
+            )
+        else:
+            conn.execute(
+                'UPDATE supplies SET current_qty=? WHERE id=?',
+                (new_qty, supply_id)
+            )
+
+        conn.execute(
+            'INSERT INTO supply_movements (supply_id, delta, reason, note, '
+            'staff_username) VALUES (?,?,?,?,?)',
+            (supply_id, delta, reason, note,
+             session.get('username', 'system'))
+        )
+        conn.commit()
+    log_action('SUPPLY MOVEMENT', row['name'],
+               f'{reason} {delta:+d} → {new_qty}'
+               + (f' ({note})' if note else ''))
+    flash(f'{row["name"]} stock updated ({reason} {delta:+d}).', 'success')
+    return redirect(url_for('supplies_list',
+                            **({'cat': request.args.get('cat')}
+                               if request.args.get('cat') else {})))
+
+
+@app.route('/supplies/<int:supply_id>/delete', methods=['POST'])
+@role_required(*CAN_STAFF)
+def supplies_delete(supply_id):
+    """Soft delete — flip active=0 so historical movement rows remain
+    interpretable (no orphan FK problems)."""
+    with get_db() as conn:
+        row = conn.execute(
+            'SELECT name FROM supplies WHERE id=? AND active=1',
+            (supply_id,)
+        ).fetchone()
+        if not row:
+            flash('Supply not found.', 'error')
+            return redirect(url_for('supplies_list'))
+        conn.execute('UPDATE supplies SET active=0 WHERE id=?', (supply_id,))
+        conn.commit()
+    log_action('SUPPLY DELETED', row['name'], 'soft-delete (active=0)')
+    flash(f'{row["name"]} removed from supplies.', 'success')
+    return redirect(url_for('supplies_list'))
+
+
+@app.route('/supplies/<int:supply_id>/history')
+@role_required(*CAN_STAFF)
+def supplies_history(supply_id):
+    """JSON list of last 50 movements for the History modal."""
+    with get_db() as conn:
+        supply = conn.execute(
+            'SELECT id, name, unit FROM supplies WHERE id=?',
+            (supply_id,)
+        ).fetchone()
+        if not supply:
+            return jsonify({'ok': False, 'message': 'Supply not found.'}), 404
+        rows = conn.execute(
+            'SELECT id, delta, reason, note, staff_username, created_at '
+            'FROM supply_movements WHERE supply_id=? '
+            'ORDER BY created_at DESC, id DESC LIMIT 50',
+            (supply_id,)
+        ).fetchall()
+    return jsonify({
+        'ok': True,
+        'supply_id': supply['id'],
+        'supply_name': supply['name'],
+        'unit': supply['unit'] or '',
+        'movements': [dict(r) for r in rows],
+    })
 
 
 # ─── Public Careers API ───────────────────────────────────────────────────────

@@ -79,6 +79,9 @@
     <div class="ms-auto d-flex align-items-center gap-2">
       <a href="{{ url_for('match_job') }}" class="btn btn-outline-light tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Find Best Match"><i class="bi bi-stars"></i></a>
       <a href="{{ url_for('staff_list') }}" class="btn btn-outline-light tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Staff Directory"><i class="bi bi-person-badge-fill"></i></a>
+      {% if can_staff %}
+      <a href="{{ url_for('supplies_list') }}" class="btn btn-outline-light tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Office Supplies"><i class="bi bi-boxes"></i></a>
+      {% endif %}
       {% if can_audit %}
       <a href="{{ url_for('audit_log') }}" class="btn btn-outline-light tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Audit Log"><i class="bi bi-journal-text"></i></a>
       {% endif %}
