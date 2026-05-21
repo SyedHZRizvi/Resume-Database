@@ -18,6 +18,7 @@ import secrets
 import hashlib
 import re
 import hmac
+import difflib
 
 # ── Anthropic API key resolution ───────────────────────────────────────────
 # Priority 1: config.py (user-supplied key)
@@ -317,8 +318,11 @@ Return ONLY a valid JSON object with exactly these keys — no explanation, no m
   "skills": "comma-separated list of key technical skills, tools and technologies found in the resume",
   "notes": "A 1-2 sentence professional summary of the candidate based on their resume content",
   "linkedin_url": "Full LinkedIn profile URL (e.g. https://linkedin.com/in/username) or empty string if not found",
-  "github_url": "Full GitHub profile URL (e.g. https://github.com/username) or empty string if not found"
+  "github_url": "Full GitHub profile URL (e.g. https://github.com/username) or empty string if not found",
+  "skills_array": ["Python", "PostgreSQL", "Team Lead", "AWS", "Spanish"]
 }
+
+skills_array must be a JSON array of 5–15 short, normalised skill tags (e.g. "Python", "PostgreSQL", "Team Lead", "AWS", "Spanish"). Each tag should be 1–3 words, properly capitalised, and represent a distinct skill, tool, technology, language or soft-skill. Return [] only if the resume genuinely lists no skills.
 
 years_experience must be an integer (estimate from employment date ranges if not stated; use 0 for fresh graduates or students)."""
 
@@ -590,6 +594,19 @@ def init_db():
             ('source',            "TEXT DEFAULT 'Manual Entry'"),
             ('applied_position',  'TEXT'),
             ('cover_letter',      'TEXT'),
+            # ── AI-detected normalised skill tags ─────────────────────────────
+            # skills_tags = JSON-encoded list of strings (5–15 short tags) that
+            # complements the legacy comma-separated `skills` column. Used to
+            # render the colored chip UI on the applicant detail page and to
+            # power the "Filter by skill" text input on the applicant list.
+            # Empty string when no tags are known. See §2.7 in CLAUDE.md.
+            ('skills_tags',          'TEXT'),
+            # ── Semantic duplicate-detection fingerprint ──────────────────────
+            # identity_fingerprint = normalised "name|specialty|education|year"
+            # token built by _build_identity_fingerprint(). Compared pairwise
+            # with difflib.SequenceMatcher on the dedup page so we catch
+            # "Mohammed Khan / M. Khan" style duplicates whose email differs.
+            ('identity_fingerprint', 'TEXT'),
         ]:
             try:
                 conn.execute(f'ALTER TABLE applicants ADD COLUMN {col} {definition}')
@@ -692,6 +709,29 @@ def init_db():
         ''')
         try:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_supply_movements_supply ON supply_movements (supply_id, created_at)')
+        except Exception:
+            pass
+
+        # ── Duplicate dismissals (semantic dedup suppression list) ──────────
+        # Records pairs of applicant IDs that an admin has reviewed and
+        # explicitly marked "not a duplicate" on the semantic-dedup section
+        # of the duplicates page. We always store the lower id first in
+        # (applicant_a, applicant_b) so a pair has exactly one canonical row
+        # regardless of which way it was first detected. See §2.7 in CLAUDE.md.
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS duplicate_dismissals (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                applicant_a   INTEGER NOT NULL,
+                applicant_b   INTEGER NOT NULL,
+                dismissed_by  TEXT,
+                dismissed_at  TEXT DEFAULT (datetime('now','localtime'))
+            )
+        ''')
+        try:
+            conn.execute(
+                'CREATE UNIQUE INDEX IF NOT EXISTS idx_duplicate_dismissals_pair '
+                'ON duplicate_dismissals (applicant_a, applicant_b)'
+            )
         except Exception:
             pass
 
@@ -959,6 +999,222 @@ def compute_file_hash(file_obj):
         sha256.update(chunk)
     file_obj.seek(0)
     return sha256.hexdigest()
+
+
+def _build_identity_fingerprint(name: str, specialty: str = '', notes: str = '',
+                                highest_education: str = '') -> str:
+    """Normalize name + specialty + a graduation-year hint from notes into a
+    single comparable token. Lowercased, alphanumeric-only, '|' separated.
+
+    Used by the semantic-dedup section of the duplicates page (Feature 3).
+    Pairs of fingerprints are compared with difflib.SequenceMatcher; pairs
+    with ratio >= 0.85 are surfaced as "likely same person across different
+    contact info". Intentionally heuristic, not ML/embeddings — see §2.7
+    in CLAUDE.md for the design rationale.
+    """
+    import re as _re
+    def _norm(s):
+        return _re.sub(r'[^a-z0-9 ]', '', (s or '').lower()).strip()
+    # Try to find a year-like 4-digit number in notes (cheap grad-year hint)
+    yr_match = _re.search(r'\b(19|20)\d{2}\b', notes or '')
+    year = yr_match.group(0) if yr_match else ''
+    return f"{_norm(name)}|{_norm(specialty)}|{_norm(highest_education)}|{year}".strip()
+
+
+def _normalize_skills_array(raw):
+    """Take an iterable (list/tuple) or fallback string of skills, return a
+    clean list of unique skill strings.
+
+    Rules:
+      • Trim each entry.
+      • Drop empties.
+      • Dedupe case-insensitively, keep first-occurrence casing.
+      • Cap at 20 items (defensive — the LLM is told to return 5–15).
+      • Each skill capped at 80 chars so a malformed model response can't
+        balloon the JSON column.
+    """
+    out = []
+    seen = set()
+    if raw is None:
+        return out
+    # Accept either a list/tuple from JSON OR a comma-separated string as a
+    # fallback (for the /add and /edit routes when the hidden input is empty).
+    if isinstance(raw, str):
+        items = raw.split(',')
+    elif isinstance(raw, (list, tuple)):
+        items = raw
+    else:
+        return out
+    for item in items:
+        s = str(item or '').strip()
+        if not s:
+            continue
+        if len(s) > 80:
+            s = s[:80].rstrip()
+        key = s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+        if len(out) >= 20:
+            break
+    return out
+
+
+def _skills_tags_from_form(form_field_value: str, fallback_skills_csv: str = '') -> str:
+    """Validate the hidden `skills_tags` input from the add/edit form.
+
+    Expected to be a JSON-encoded list of strings. Falls back to splitting
+    the comma-separated `skills` field if JSON parsing fails. Returns the
+    re-encoded JSON string (or '' if nothing usable was supplied).
+    """
+    raw = (form_field_value or '').strip()
+    arr = []
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            arr = _normalize_skills_array(parsed)
+        except (ValueError, TypeError):
+            arr = []
+    if not arr and fallback_skills_csv:
+        arr = _normalize_skills_array(fallback_skills_csv)
+    return json.dumps(arr, ensure_ascii=False) if arr else ''
+
+
+# ── Semantic-dedup helpers (Feature 3) ───────────────────────────────────────
+# Identifies "Mohammed Khan / M. Khan" style duplicates whose email and phone
+# differ. Intentionally heuristic — see §2.7 in CLAUDE.md.
+
+# difflib.SequenceMatcher ratio above this counts as "probably the same
+# person". 0.85 was picked empirically: short single-character differences
+# like "Mohammed" vs "Mohamed" sit comfortably above; unrelated names like
+# "John Smith" vs "Jane Doe" sit far below.
+_SEMANTIC_DEDUP_THRESHOLD = 0.85
+_SEMANTIC_DEDUP_MAX_CLUSTERS = 50
+
+
+def _get_dismissed_pair_set():
+    """Return the set of (low_id, high_id) tuples already marked 'not a
+    duplicate' on the dedup page. Used to skip clusters the user has
+    already reviewed."""
+    out = set()
+    try:
+        with get_db() as conn:
+            rows = conn.execute(
+                'SELECT applicant_a, applicant_b FROM duplicate_dismissals'
+            ).fetchall()
+        for r in rows:
+            a, b = int(r['applicant_a']), int(r['applicant_b'])
+            out.add((min(a, b), max(a, b)))
+    except Exception:
+        pass
+    return out
+
+
+def _find_semantic_dupes(hash_dup_ids=None):
+    """Pairwise-compare every applicant's identity_fingerprint and surface
+    clusters whose ratio >= _SEMANTIC_DEDUP_THRESHOLD.
+
+    `hash_dup_ids` (optional set of int ids) is the set of applicants that
+    are *already* flagged by the existing hash-based detection; we exclude
+    those so we don't double-report the same person.
+
+    Returns a list (capped at _SEMANTIC_DEDUP_MAX_CLUSTERS) of dicts:
+        {'score': float, 'members': [{id, name, email, date_added, ...}, ...]}
+    """
+    hash_dup_ids = set(hash_dup_ids or ())
+    dismissed = _get_dismissed_pair_set()
+
+    with get_db() as conn:
+        rows = conn.execute(
+            'SELECT id, name, email, phone, date_added, applied_position, '
+            'specialty, identity_fingerprint '
+            'FROM applicants '
+            "WHERE identity_fingerprint IS NOT NULL "
+            "AND identity_fingerprint != ''"
+        ).fetchall()
+
+    # Map id -> row dict for fast lookup
+    by_id = {}
+    fps = []
+    for r in rows:
+        d = dict(r)
+        rid = int(d['id'])
+        if rid in hash_dup_ids:
+            continue
+        by_id[rid] = d
+        fps.append((rid, d['identity_fingerprint'] or ''))
+
+    # Pairwise compare. O(N²) but capped by the row count of an applicant
+    # table — fine up to ~5k rows. Above that we'd switch to blocking on
+    # the surname token; not needed yet.
+    parent = {rid: rid for rid, _ in fps}
+
+    def _find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def _union(a, b):
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    pair_scores = {}  # (lo,hi) -> best ratio observed
+
+    for i in range(len(fps)):
+        id_a, fp_a = fps[i]
+        if not fp_a:
+            continue
+        for j in range(i + 1, len(fps)):
+            id_b, fp_b = fps[j]
+            if not fp_b:
+                continue
+            lo, hi = (id_a, id_b) if id_a < id_b else (id_b, id_a)
+            if (lo, hi) in dismissed:
+                continue
+            ratio = difflib.SequenceMatcher(a=fp_a, b=fp_b).ratio()
+            if ratio >= _SEMANTIC_DEDUP_THRESHOLD:
+                pair_scores[(lo, hi)] = max(pair_scores.get((lo, hi), 0.0), ratio)
+                _union(id_a, id_b)
+
+    if not pair_scores:
+        return []
+
+    # Group into clusters via union-find
+    clusters_map = {}
+    for (lo, hi), _score in pair_scores.items():
+        root = _find(lo)
+        clusters_map.setdefault(root, set()).update((lo, hi))
+
+    clusters = []
+    for member_ids in clusters_map.values():
+        members = sorted(
+            (by_id[i] for i in member_ids if i in by_id),
+            key=lambda m: (m.get('date_added') or '', m.get('id') or 0),
+        )
+        if len(members) < 2:
+            continue
+        # Cluster score = max pairwise score among its members
+        scores_in_cluster = [
+            s for (a, b), s in pair_scores.items()
+            if a in member_ids and b in member_ids
+        ]
+        cluster_score = max(scores_in_cluster) if scores_in_cluster else 0.0
+        # Build a stable pair list for the "Mark as not duplicate" form
+        member_list = list(member_ids)
+        member_list.sort()
+        pair_a, pair_b = member_list[0], member_list[-1]
+        clusters.append({
+            'score':   round(cluster_score, 3),
+            'members': members,
+            'pair_a':  pair_a,
+            'pair_b':  pair_b,
+        })
+
+    clusters.sort(key=lambda c: c['score'], reverse=True)
+    return clusters[:_SEMANTIC_DEDUP_MAX_CLUSTERS]
 
 
 def _normalize_resume_text(text):
@@ -2100,6 +2356,7 @@ def add_resume():
         years_experience = request.form.get('years_experience', '0').strip() or '0'
         highest_education= request.form.get('highest_education', '').strip()
         skills           = request.form.get('skills', '').strip()
+        skills_tags_raw  = request.form.get('skills_tags', '').strip()
         notes            = request.form.get('notes', '').strip()
 
         errors = []
@@ -2233,18 +2490,27 @@ def add_resume():
                 flash('Only PDF, DOC, and DOCX files are allowed.', 'error')
                 return render_template('add_resume.html', form=request.form)
 
+        # Validate AI-detected skill tags (hidden input), fall back to the
+        # comma-separated `skills` field if the JSON is malformed/missing.
+        skills_tags = _skills_tags_from_form(skills_tags_raw, skills)
+        # Build the semantic-dedup fingerprint from form fields. Cheap heuristic.
+        identity_fp = _build_identity_fingerprint(
+            name=name, specialty=specialty,
+            notes=notes, highest_education=highest_education,
+        )
+
         with get_db() as conn:
             conn.execute('''
                 INSERT INTO applicants
                     (name, email, phone, linkedin_url, github_url,
                      specialty, years_experience, highest_education,
                      skills, resume_filename, notes, file_hash, text_hash,
-                     parsed_text)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     parsed_text, skills_tags, identity_fingerprint)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (name, email, phone, linkedin_url, github_url,
                   specialty, years_experience, highest_education,
                   skills, resume_filename, notes, file_hash, text_hash,
-                  parsed_text))
+                  parsed_text, skills_tags, identity_fp))
             conn.commit()
 
         flash(f'✓ Resume for {name} has been added successfully!', 'success')
@@ -2368,6 +2634,20 @@ def add_bulk():
             except Exception:
                 bulk_parsed_text = None
 
+            # Derive normalised skill tags + the semantic-dedup fingerprint
+            # from the freshly parsed resume so bulk uploads behave the same
+            # as single-file uploads (Features 1 + 3).
+            parsed_skills_csv = (parsed.get('skills') or '').strip()
+            bulk_skills_array = _normalize_skills_array(parsed_skills_csv)
+            bulk_skills_tags  = (json.dumps(bulk_skills_array, ensure_ascii=False)
+                                 if bulk_skills_array else '')
+            bulk_identity_fp = _build_identity_fingerprint(
+                name=name,
+                specialty=specialty,
+                notes='',
+                highest_education=(parsed.get('highest_education') or '').strip(),
+            )
+
             try:
                 with get_db() as conn:
                     conn.execute('''
@@ -2375,8 +2655,9 @@ def add_bulk():
                             (name, email, phone, linkedin_url, github_url,
                              specialty, years_experience,
                              highest_education, skills, resume_filename,
-                             file_hash, text_hash, parsed_text)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             file_hash, text_hash, parsed_text,
+                             skills_tags, identity_fingerprint)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (name,
                           (parsed.get('email') or '').strip(),
                           (parsed.get('phone') or '').strip(),
@@ -2385,9 +2666,10 @@ def add_bulk():
                           specialty,
                           _safe_int(parsed.get('years_experience'), 0),
                           (parsed.get('highest_education') or '').strip(),
-                          (parsed.get('skills') or '').strip(),
+                          parsed_skills_csv,
                           filename,
-                          fhash, thash, bulk_parsed_text))
+                          fhash, thash, bulk_parsed_text,
+                          bulk_skills_tags, bulk_identity_fp))
                     conn.commit()
                 added.append({'name': name, 'filename': file.filename})
                 log_action('RESUME ADDED', name, f'Bulk upload — {file.filename}')
@@ -2428,10 +2710,28 @@ def view_resume(applicant_id):
     if applicant['resume_filename']:
         file_ext = applicant['resume_filename'].rsplit('.', 1)[-1].lower()
 
+    # Decode the AI-detected skill chip list (Feature 1). Tolerant of empty
+    # strings AND old rows where the column doesn't exist yet — never crash
+    # the detail page just because the JSON is malformed.
+    skills_chips = []
+    try:
+        raw_tags = applicant['skills_tags']
+    except (KeyError, IndexError):
+        raw_tags = None
+    if raw_tags:
+        try:
+            parsed_tags = json.loads(raw_tags)
+            if isinstance(parsed_tags, list):
+                skills_chips = [str(t).strip() for t in parsed_tags
+                                if str(t).strip()]
+        except (ValueError, TypeError):
+            skills_chips = []
+
     return render_template('view_resume.html', applicant=applicant,
                            file_ext=file_ext, interviews=interviews,
                            staff_list=staff_list,
                            latest_iv=latest_iv,
+                           skills_chips=skills_chips,
                            office_contact_name=OFFICE_CONTACT_NAME)
 
 
@@ -2457,6 +2757,7 @@ def edit_resume(applicant_id):
         years_experience = request.form.get('years_experience', '0').strip() or '0'
         highest_education= request.form.get('highest_education', '').strip()
         skills           = request.form.get('skills', '').strip()
+        skills_tags_raw  = request.form.get('skills_tags', '').strip()
         notes            = request.form.get('notes', '').strip()
 
         errors = []
@@ -2550,18 +2851,29 @@ def edit_resume(applicant_id):
             new_text_hash    = None
             new_parsed_text  = None
 
+        # Re-normalise skill tags and rebuild the dedup fingerprint from the
+        # latest form values (so an edit can correct stale skill chips or a
+        # mis-spelled name without leaving the old fingerprint behind).
+        skills_tags = _skills_tags_from_form(skills_tags_raw, skills)
+        identity_fp = _build_identity_fingerprint(
+            name=name, specialty=specialty,
+            notes=notes, highest_education=highest_education,
+        )
+
         with get_db() as conn:
             conn.execute('''
                 UPDATE applicants
                 SET name=?, email=?, phone=?, linkedin_url=?, github_url=?,
                     specialty=?, years_experience=?, highest_education=?,
                     skills=?, resume_filename=?, notes=?,
-                    file_hash=?, text_hash=?, parsed_text=?
+                    file_hash=?, text_hash=?, parsed_text=?,
+                    skills_tags=?, identity_fingerprint=?
                 WHERE id=?
             ''', (name, email, phone, linkedin_url, github_url,
                   specialty, years_experience, highest_education,
                   skills, resume_filename, notes,
-                  new_file_hash, new_text_hash, new_parsed_text, applicant_id))
+                  new_file_hash, new_text_hash, new_parsed_text,
+                  skills_tags, identity_fp, applicant_id))
             conn.commit()
 
         edit_notes = request.form.get('edit_notes', '').strip()
@@ -4441,6 +4753,11 @@ def parse_resume():
     # ── Step 2: Local smart parse (works for every PDF / DOCX) ───────────────
     if resume_text.strip():
         result = _smart_parse(resume_text)
+        # Derive normalised skill chips from the comma-separated skills field
+        # so the chip UI works even when the AI image-OCR path doesn't run.
+        skills_array = _normalize_skills_array(result.get('skills', ''))
+        result['skills_array'] = skills_array
+        result['skills_tags']  = json.dumps(skills_array, ensure_ascii=False) if skills_array else ''
         result['_method'] = 'local'
         return jsonify(result)
 
@@ -4484,6 +4801,20 @@ def parse_resume():
                 result['years_experience'] = int(result.get('years_experience', 0))
             except (ValueError, TypeError):
                 result['years_experience'] = 0
+            # ── Normalise skills_array from the AI response ─────────────────
+            # The PARSE_PROMPT asks for a "skills_array" key with 5–15 short
+            # tags. Defend against missing/malformed model output by falling
+            # back to splitting the comma-separated "skills" string. We also
+            # surface a JSON-encoded "skills_tags" string so the browser can
+            # drop it straight into the hidden form input.
+            raw_arr = result.get('skills_array')
+            if raw_arr is None:
+                raw_arr = result.get('skills', '')
+            skills_array = _normalize_skills_array(raw_arr)
+            if not skills_array:
+                skills_array = _normalize_skills_array(result.get('skills', ''))
+            result['skills_array'] = skills_array
+            result['skills_tags']  = json.dumps(skills_array, ensure_ascii=False) if skills_array else ''
             result['_method'] = 'ai'
             return jsonify(result)
 
@@ -4509,6 +4840,146 @@ def parse_resume():
 # Re-Analyze routes removed — the _auto_reanalyze_on_startup() background
 # thread already re-parses every resume file each time the program starts,
 # applying the latest parsing logic automatically.  No manual button needed.
+
+
+# ─── AI Interview Question Generator ──────────────────────────────────────────
+# Called from templates/view_resume.html (Feature 2). Returns a JSON object
+# {ok: true, questions: [10 strings]} or {ok: false, message: "..."} on error.
+# The route is gated to CAN_NOTES (the same group that can record interviews)
+# and rate-limited to cap Anthropic spend at 20/hour / 100/day per user. See
+# §2.7 in CLAUDE.md for the full contract.
+@app.route('/api/ai/interview-questions', methods=['POST'])
+@role_required(*CAN_NOTES)
+@limiter.limit('20/hour;100/day')
+def api_ai_interview_questions():
+    if not ANTHROPIC_API_KEY:
+        return jsonify({
+            'ok': False,
+            'message': ('AI Interview Questions are disabled — no Anthropic API '
+                        'key is configured on this server.'),
+        }), 503
+
+    # ── Parse body ───────────────────────────────────────────────────────────
+    body = request.get_json(silent=True) or {}
+    try:
+        applicant_id = int(body.get('applicant_id') or 0)
+    except (TypeError, ValueError):
+        applicant_id = 0
+    if applicant_id <= 0:
+        return jsonify({'ok': False, 'message': 'applicant_id is required.'}), 400
+    position_override = (body.get('position_override') or '').strip()[:200]
+
+    # ── Load the applicant profile ──────────────────────────────────────────
+    with get_db() as conn:
+        row = conn.execute(
+            'SELECT id, name, email, specialty, years_experience, '
+            'highest_education, skills, notes, linkedin_url '
+            'FROM applicants WHERE id=?',
+            (applicant_id,)
+        ).fetchone()
+    if not row:
+        return jsonify({'ok': False, 'message': 'Applicant not found.'}), 404
+    profile = dict(row)
+    position = position_override or (profile.get('specialty') or 'General')
+
+    # ── Build the prompt and call Claude ─────────────────────────────────────
+    profile_block = (
+        f"Name: {profile.get('name') or 'Unknown'}\n"
+        f"Specialty: {profile.get('specialty') or '—'}\n"
+        f"Years of experience: {profile.get('years_experience') or 0}\n"
+        f"Highest education: {profile.get('highest_education') or '—'}\n"
+        f"Skills: {profile.get('skills') or '—'}\n"
+        f"LinkedIn: {profile.get('linkedin_url') or '—'}\n"
+        f"Resume notes (HR summary): {(profile.get('notes') or '—')[:1000]}"
+    )
+
+    prompt = (
+        "You are an expert interviewer at TransCrypts.\n"
+        "Given this candidate profile and the position they are applying for, "
+        "generate exactly 10 tailored interview questions.\n"
+        "Mix: 4 behavioural (probe collaboration, conflict, growth, ownership), "
+        "4 role-specific or technical (probe the candidate's actual claims), "
+        "2 gap-probing (areas where the resume is thin or unclear).\n"
+        "Return ONLY a JSON object with this exact shape — no markdown, no "
+        'prose, no explanation:\n'
+        '{"questions": ["q1?", "q2?", ..., "q10?"]}\n\n'
+        f"Candidate profile:\n{profile_block}\n\n"
+        f"Position: {position}"
+    )
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        message = client.messages.create(
+            model='claude-haiku-4-5-20251001',
+            max_tokens=1600,
+            messages=[{'role': 'user', 'content': prompt}],
+        )
+    except Exception as e:
+        log_action('AI INTERVIEW QUESTIONS', profile.get('name') or f'id={applicant_id}',
+                   f'API error: {type(e).__name__}: {str(e)[:200]}')
+        return jsonify({
+            'ok': False,
+            'message': f'AI service is temporarily unavailable ({type(e).__name__}). '
+                       'Please try again in a moment.',
+        }), 502
+
+    # ── Validate the model response ──────────────────────────────────────────
+    raw = ''
+    try:
+        raw = (message.content[0].text or '').strip()
+    except Exception:
+        raw = ''
+    if raw.startswith('```'):
+        # Strip ``` and optional language tag if the model used a code fence
+        raw = raw.split('```', 2)[1] if '```' in raw[3:] else raw[3:]
+        if raw.startswith('json'):
+            raw = raw[4:]
+        raw = raw.strip().rstrip('`').strip()
+
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        log_action('AI INTERVIEW QUESTIONS',
+                   profile.get('name') or f'id={applicant_id}',
+                   'Unparseable JSON response')
+        return jsonify({
+            'ok': False,
+            'message': 'AI response was unparseable, please try again.',
+        }), 502
+
+    if not isinstance(parsed, dict):
+        return jsonify({
+            'ok': False,
+            'message': 'AI response was unparseable, please try again.',
+        }), 502
+    qs_raw = parsed.get('questions')
+    if not isinstance(qs_raw, list):
+        return jsonify({
+            'ok': False,
+            'message': 'AI response was unparseable, please try again.',
+        }), 502
+    questions = [str(q).strip() for q in qs_raw if str(q or '').strip()]
+    # Be lenient: accept 5–15 questions even though we asked for 10.
+    if len(questions) < 5 or len(questions) > 15:
+        return jsonify({
+            'ok': False,
+            'message': f'AI returned an unexpected number of questions ({len(questions)}). '
+                       'Please try again.',
+        }), 502
+    # Cap each question at ~600 chars (defensive — protects the UI).
+    questions = [q[:600] for q in questions]
+
+    log_action('AI INTERVIEW QUESTIONS',
+               profile.get('name') or f'id={applicant_id}',
+               f'Generated {len(questions)} questions for position: {position}')
+
+    return jsonify({
+        'ok':         True,
+        'questions':  questions,
+        'position':   position,
+        'applicant':  {'id': profile['id'], 'name': profile.get('name') or ''},
+    })
 
 
 @app.route('/open-config', methods=['POST'])
@@ -5404,13 +5875,28 @@ def api_careers_apply():
             notes_parts.append('⚠ ' + ' '.join(discrepancy_notes))
         combined_notes = '\n\n'.join(notes_parts)
 
+        # Derive normalised skill tags + semantic-dedup fingerprint from the
+        # parsed resume (Features 1 + 3) so career-website applications get
+        # the same chip UI / dedup coverage as manual entries.
+        career_skills_csv   = parsed.get('skills', '') or ''
+        career_skills_array = _normalize_skills_array(career_skills_csv)
+        career_skills_tags  = (json.dumps(career_skills_array, ensure_ascii=False)
+                               if career_skills_array else '')
+        career_identity_fp = _build_identity_fingerprint(
+            name=name,
+            specialty=parsed.get('specialty', position or '') or '',
+            notes=combined_notes,
+            highest_education=parsed.get('highest_education', '') or '',
+        )
+
         cur = conn.execute(
             '''INSERT INTO applicants
                (name, email, phone, specialty, years_experience, highest_education,
                 skills, resume_filename, notes, date_added, hiring_status,
                 linkedin_url, github_url, file_hash, text_hash, source,
-                applied_position, cover_letter, parsed_text)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                applied_position, cover_letter, parsed_text,
+                skills_tags, identity_fingerprint)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (
                 name, email, phone,
                 parsed.get('specialty', position or ''),
@@ -5429,6 +5915,8 @@ def api_careers_apply():
                 position_label,
                 cover_letter,
                 parsed_text_value,
+                career_skills_tags,
+                career_identity_fp,
             )
         )
         applicant_id = cur.lastrowid
@@ -5468,6 +5956,7 @@ def api_careers_health():
 # ──────────────────────────────────────────────────────────────────────────────
 _DUPLICATES_PAGE_TMPL = """<!DOCTYPE html>
 <html lang="en"><head>
+<meta name="csrf-token" content="{{ csrf_token() }}">
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Find Duplicates — Resume Database</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -5477,6 +5966,19 @@ _DUPLICATES_PAGE_TMPL = """<!DOCTYPE html>
   .keep-row   { background:#e8f5e9; }
   .remove-row { background:#ffebee; }
   .hash-cell  { font-family: monospace; font-size:.75rem; color:#6c757d; }
+  .semantic-card .member-card {
+    border-left: 3px solid var(--tc-green, #6DC49A);
+    background: #f8fafc;
+  }
+  .semantic-score {
+    background: #ecfdf5;
+    color: #166534;
+    border: 1px solid #d1fae5;
+    border-radius: 12px;
+    padding: 2px 10px;
+    font-size: 0.78rem;
+    font-weight: 600;
+  }
 </style>
 </head><body>
 <nav class="navbar navbar-dark bg-primary shadow-sm">
@@ -5516,6 +6018,22 @@ _DUPLICATES_PAGE_TMPL = """<!DOCTYPE html>
     </div>
   {% endif %}
 
+  {% if dismissed_msg %}
+    <div class="alert alert-success py-2">
+      <i class="bi bi-check-circle-fill me-1"></i>{{ dismissed_msg }}
+    </div>
+  {% endif %}
+
+  <h5 class="fw-semibold mt-4 mb-2 text-dark">
+    <i class="bi bi-file-earmark-binary me-2 text-primary"></i>Exact content duplicates
+    <span class="badge bg-light text-muted fw-normal ms-2"
+          style="font-size:0.72rem">Hash-based</span>
+  </h5>
+  <p class="text-muted small mb-3">
+    Two records whose resume text normalises to the same MD5 — almost certainly
+    the same file uploaded twice.
+  </p>
+
   {% if not duplicate_groups %}
     <div class="alert alert-success">
       <i class="bi bi-check-circle me-1"></i>
@@ -5524,6 +6042,7 @@ _DUPLICATES_PAGE_TMPL = """<!DOCTYPE html>
   {% else %}
     <form method="POST" action="{{ url_for('admin_cleanup_content_duplicates') }}?execute=1"
           onsubmit="return confirm('Delete {{ will_delete_count }} duplicate record(s)? The oldest record in each group is kept. This cannot be undone.');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="d-flex justify-content-between align-items-center mb-3">
         <div>Found <strong>{{ duplicate_groups|length }}</strong> duplicate group(s)
              — <strong>{{ will_delete_count }}</strong> record(s) will be removed.</div>
@@ -5573,6 +6092,80 @@ _DUPLICATES_PAGE_TMPL = """<!DOCTYPE html>
         </div>
       {% endfor %}
     </form>
+  {% endif %}
+
+  {# ── Semantic / fuzzy duplicates section (Feature 3) ─────────────────── #}
+  <h5 class="fw-semibold mt-5 mb-2 text-dark">
+    <i class="bi bi-people-fill me-2 text-primary"></i>Likely-same person across different contact info
+    <span class="badge bg-light text-muted fw-normal ms-2"
+          style="font-size:0.72rem">Fuzzy (difflib ≥ 0.85)</span>
+  </h5>
+  <p class="text-muted small mb-3">
+    Compares a normalised "name · specialty · education · grad-year" fingerprint
+    across every applicant. Useful for catching "Mohammed Khan / M. Khan" cases
+    where the email differs. Use the <strong>Mark as not duplicate</strong>
+    button to permanently dismiss a false positive.
+  </p>
+
+  {% if not semantic_clusters %}
+    <div class="alert alert-success">
+      <i class="bi bi-check-circle me-1"></i>
+      No semantic duplicates found — your applicant pool looks clean.
+    </div>
+  {% else %}
+    <div class="text-muted small mb-3">
+      Showing top <strong>{{ semantic_clusters|length }}</strong> cluster(s) by score.
+    </div>
+    {% for c in semantic_clusters %}
+      <div class="card mb-3 shadow-sm semantic-card">
+        <div class="card-header bg-white py-2 d-flex justify-content-between align-items-center">
+          <div>
+            <span class="semantic-score">
+              <i class="bi bi-stars me-1"></i>match {{ (c.score * 100)|round|int }}%
+            </span>
+            <span class="text-muted small ms-2">
+              {{ c.members|length }} record(s) in this cluster
+            </span>
+          </div>
+          <form method="POST"
+                action="{{ url_for('admin_dismiss_semantic_dup') }}"
+                onsubmit="return confirm('Mark these two records as NOT a duplicate? They will not appear in this list again.');"
+                class="m-0">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="applicant_a" value="{{ c.pair_a }}">
+            <input type="hidden" name="applicant_b" value="{{ c.pair_b }}">
+            <button type="submit" class="btn btn-sm btn-outline-secondary">
+              <i class="bi bi-x-circle me-1"></i>Mark as not duplicate
+            </button>
+          </form>
+        </div>
+        <div class="card-body">
+          <div class="row g-3">
+            {% for m in c.members %}
+              <div class="col-12 col-md-6 col-xl-4">
+                <div class="member-card rounded p-3 h-100">
+                  <div class="fw-semibold">
+                    <i class="bi bi-person-circle text-primary me-1"></i>{{ m.name or '(no name)' }}
+                    <span class="text-muted small ms-1">#{{ m.id }}</span>
+                  </div>
+                  <div class="small text-muted mt-1">
+                    {% if m.email %}<div><i class="bi bi-envelope me-1"></i>{{ m.email }}</div>{% endif %}
+                    {% if m.phone %}<div><i class="bi bi-telephone me-1"></i>{{ m.phone }}</div>{% endif %}
+                    {% if m.specialty %}<div><i class="bi bi-briefcase me-1"></i>{{ m.specialty }}</div>{% endif %}
+                    {% if m.applied_position %}<div><i class="bi bi-bullseye me-1"></i>{{ m.applied_position }}</div>{% endif %}
+                    {% if m.date_added %}<div><i class="bi bi-calendar3 me-1"></i>{{ m.date_added[:10] }}</div>{% endif %}
+                  </div>
+                  <a href="{{ url_for('view_resume', applicant_id=m.id) }}"
+                     class="btn btn-sm btn-outline-primary mt-2">
+                    <i class="bi bi-eye me-1"></i>View
+                  </a>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    {% endfor %}
   {% endif %}
 </div>
 </body></html>
@@ -5637,6 +6230,36 @@ def admin_cleanup_content_duplicates():
             backfilled += 1
         except Exception:
             skipped += 1
+
+    # ── 1b. Backfill missing identity_fingerprint values ──────────────────
+    # Older applicant rows pre-date Feature 3 and have NULL identity_fingerprint.
+    # Rebuild them here so the semantic-dedup pass below catches every record.
+    try:
+        with get_db() as conn:
+            stale = conn.execute(
+                'SELECT id, name, specialty, notes, highest_education '
+                'FROM applicants '
+                "WHERE identity_fingerprint IS NULL "
+                "OR identity_fingerprint = ''"
+            ).fetchall()
+        for r in stale:
+            fp = _build_identity_fingerprint(
+                name=r['name'] or '',
+                specialty=r['specialty'] or '',
+                notes=r['notes'] or '',
+                highest_education=r['highest_education'] or '',
+            )
+            if not fp:
+                continue
+            with get_db() as conn:
+                conn.execute(
+                    'UPDATE applicants SET identity_fingerprint=? WHERE id=?',
+                    (fp, r['id'])
+                )
+                conn.commit()
+    except Exception:
+        # Never break the dedup page just because backfill couldn't run.
+        pass
 
     # ── 2. Find duplicate groups ────────────────────────────────────────────
     with get_db() as conn:
@@ -5716,14 +6339,38 @@ def admin_cleanup_content_duplicates():
             })
             ids_to_delete.extend([m['id'] for m in members[1:]])
 
+    # ── 4. Semantic-dedup pass (Feature 3) ───────────────────────────────────
+    # Compares fingerprints with difflib and surfaces likely-same-person
+    # clusters that the hash-based check above didn't already flag. Pairs
+    # the user has dismissed are suppressed via the duplicate_dismissals
+    # table.
+    hash_dup_ids = set()
+    for g in duplicate_groups:
+        for member in [g['keep']] + g['remove']:
+            try:
+                hash_dup_ids.add(int(member['id']))
+            except (KeyError, TypeError, ValueError):
+                pass
+    try:
+        semantic_clusters = _find_semantic_dupes(hash_dup_ids=hash_dup_ids)
+    except Exception:
+        semantic_clusters = []
+
+    # Optional one-shot success message after dismissing a pair (redirect-
+    # back-with-flag pattern keeps this page stateless).
+    dismissed_msg = ''
+    if (request.args.get('dismissed') or '') == '1':
+        dismissed_msg = 'Marked as not a duplicate. The pair will not appear here again.'
+
     if want_json:
         return jsonify({
             'ok':          True,
             'mode':        'executed' if execute else 'preview',
             'backfilled':  backfilled,
             'skipped':     skipped,
-            'duplicate_groups': duplicate_groups,
-            'will_delete_ids':  ids_to_delete if not execute else [],
+            'duplicate_groups':  duplicate_groups,
+            'semantic_clusters': semantic_clusters,
+            'will_delete_ids':   ids_to_delete if not execute else [],
             'deleted':     deleted,
         })
 
@@ -5734,7 +6381,45 @@ def admin_cleanup_content_duplicates():
         duplicate_groups  = duplicate_groups,
         will_delete_count = len(ids_to_delete),
         deleted           = deleted,
+        semantic_clusters = semantic_clusters,
+        dismissed_msg     = dismissed_msg,
     )
+
+
+@app.route('/admin/dismiss-semantic-dup', methods=['POST'])
+@role_required(*CAN_USERS)
+def admin_dismiss_semantic_dup():
+    """Record a pair of applicant IDs as "reviewed, not a duplicate".
+
+    Triggered from the new semantic-dedup section on the dedup page (Feature
+    3). We always normalise the pair to (min_id, max_id) so a swap of the two
+    inputs produces the same canonical row.
+    """
+    try:
+        a = int(request.form.get('applicant_a') or 0)
+        b = int(request.form.get('applicant_b') or 0)
+    except (TypeError, ValueError):
+        a, b = 0, 0
+    if a <= 0 or b <= 0 or a == b:
+        flash('Invalid pair — could not record dismissal.', 'error')
+        return redirect(url_for('admin_cleanup_content_duplicates'))
+    lo, hi = (a, b) if a < b else (b, a)
+    try:
+        with get_db() as conn:
+            conn.execute(
+                'INSERT INTO duplicate_dismissals (applicant_a, applicant_b, dismissed_by) '
+                'VALUES (?, ?, ?)',
+                (lo, hi, session.get('username', 'system'))
+            )
+            conn.commit()
+    except Exception:
+        # Most likely a unique-index violation because the pair was already
+        # dismissed. Either way, treat as success — the user's intent is
+        # already recorded.
+        pass
+    log_action('SEMANTIC DUP DISMISSED', f'#{lo} ↔ #{hi}',
+               'Marked as not-a-duplicate on the dedup page.')
+    return redirect(url_for('admin_cleanup_content_duplicates') + '?dismissed=1')
 
 
 @app.route('/api-status', methods=['GET'])
@@ -6436,6 +7121,15 @@ def _ingest_indeed_email(msg, settings):
         linkedin = (parsed.get('linkedin_url') or '').strip()
         github   = (parsed.get('github_url')   or '').strip()
 
+        # Skill tags + dedup fingerprint (Features 1 + 3) for Indeed imports.
+        indeed_skills_array = _normalize_skills_array(skills)
+        indeed_skills_tags  = (json.dumps(indeed_skills_array, ensure_ascii=False)
+                               if indeed_skills_array else '')
+        indeed_identity_fp = _build_identity_fingerprint(
+            name=final_name, specialty=final_specialty,
+            notes=notes_combined, highest_education=edu,
+        )
+
         with get_db() as conn:
             conn.execute(
                 '''INSERT INTO applicants
@@ -6443,8 +7137,8 @@ def _ingest_indeed_email(msg, settings):
                     highest_education, skills, resume_filename, notes,
                     date_added, hiring_status, linkedin_url, github_url,
                     file_hash, text_hash, source, applied_position,
-                    parsed_text)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    parsed_text, skills_tags, identity_fingerprint)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                 (
                     final_name,
                     effective_email,
@@ -6464,6 +7158,8 @@ def _ingest_indeed_email(msg, settings):
                     'Indeed',
                     cand_position,
                     parsed_text,
+                    indeed_skills_tags,
+                    indeed_identity_fp,
                 )
             )
             conn.commit()
@@ -6932,6 +7628,16 @@ def api_indeed_import():
         linkedin = (parsed.get('linkedin_url') or '').strip()
         github   = (parsed.get('github_url')   or '').strip()
 
+        # Skill tags + dedup fingerprint (Features 1 + 3) for the Indeed
+        # bookmarklet import path — keeps every applicant row consistent.
+        ib_skills_array = _normalize_skills_array(merged_skills)
+        ib_skills_tags  = (json.dumps(ib_skills_array, ensure_ascii=False)
+                           if ib_skills_array else '')
+        ib_identity_fp = _build_identity_fingerprint(
+            name=final_name, specialty=final_specialty,
+            notes=notes_combined, highest_education=edu,
+        )
+
         with get_db() as conn:
             cur = conn.execute(
                 '''INSERT INTO applicants
@@ -6939,8 +7645,8 @@ def api_indeed_import():
                     highest_education, skills, resume_filename, notes,
                     date_added, hiring_status, linkedin_url, github_url,
                     file_hash, text_hash, source, applied_position,
-                    parsed_text)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    parsed_text, skills_tags, identity_fingerprint)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                 (
                     final_name,
                     effective_email,
@@ -6960,6 +7666,8 @@ def api_indeed_import():
                     'Indeed',
                     final_position,
                     parsed_text,
+                    ib_skills_tags,
+                    ib_identity_fp,
                 )
             )
             new_id = getattr(cur, 'lastrowid', None)

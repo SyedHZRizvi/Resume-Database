@@ -128,6 +128,22 @@
               {% endif %}
             </div>
           {% endif %}
+
+          {# ── AI-detected skill chips (Feature 1) ─────────────────────── #}
+          {# Render under the contact section so recruiters see the at-a-glance #}
+          {# skill summary right next to the name. Hidden entirely if empty.   #}
+          {% if skills_chips %}
+            <div class="border-top pt-3 mt-3 text-start">
+              <div class="text-muted small fw-semibold mb-2">
+                <i class="bi bi-stars text-success me-1"></i>AI-detected skills
+              </div>
+              <div class="d-flex flex-wrap gap-2">
+                {% for s in skills_chips %}
+                  <span class="tc-skill-chip">{{ s }}</span>
+                {% endfor %}
+              </div>
+            </div>
+          {% endif %}
         </div>
       </div>
 
@@ -389,10 +405,18 @@
            navbar and would just be duplicates. Keeping only the actions that
            are unique to this card (file download, add another resume).
       -->
-      {% if (applicant.resume_filename and can_download) or can_add %}
+      {% if (applicant.resume_filename and can_download) or can_add or can_notes %}
       <div class="card border-0 shadow-sm">
         <div class="card-body">
           <div class="d-grid gap-2">
+            {% if can_notes %}
+            {# AI Interview Questions — opens the modal below (Feature 2). #}
+            <button type="button" class="btn btn-outline-success"
+                    data-bs-toggle="modal" data-bs-target="#aiQuestionsModal"
+                    title="Generate tailored interview questions for this candidate">
+              <i class="bi bi-stars me-2"></i>AI Interview Questions
+            </button>
+            {% endif %}
             {% if applicant.resume_filename and can_download %}
               <a href="{{ url_for('uploaded_file', filename=applicant.resume_filename) }}"
                  download class="btn btn-outline-success">
@@ -953,6 +977,48 @@
   </div>
 </div>
 
+{% if can_notes %}
+<!-- ── AI Interview Questions Modal (Feature 2) ─────────────────────────── -->
+<div class="modal fade" id="aiQuestionsModal" tabindex="-1"
+     aria-labelledby="aiQuestionsModalTitle">
+  <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title fw-bold" id="aiQuestionsModalTitle">
+          <i class="bi bi-stars text-success me-2"></i>AI Interview Questions
+          <span class="text-muted fw-normal small ms-2">— {{ applicant.name }}</span>
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="aiQuestionsBody">
+        {# Initial state — generate button + tiny explainer. JS replaces the
+           inner HTML when the user clicks Generate (or hits Try again). #}
+        <div id="aiQuestionsInitial" class="text-center py-4">
+          <i class="bi bi-stars display-4 text-success mb-3 d-block"></i>
+          <p class="mb-3 text-muted" style="max-width:480px;margin:0 auto">
+            Generate 10 tailored interview questions — a mix of behavioural,
+            role-specific, and gap-probing — using the candidate's resume profile.
+          </p>
+          <button type="button" class="btn btn-success btn-lg px-4"
+                  id="aiQuestionsGenerateBtn" onclick="generateAiQuestions()">
+            <i class="bi bi-magic me-2"></i>Generate Questions
+          </button>
+          <div class="text-muted small mt-3">
+            <i class="bi bi-info-circle me-1"></i>
+            Each interviewer is limited to 20 generations per hour.
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+          <i class="bi bi-x-lg me-1"></i>Close
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <!-- ── Delete Confirmation Modal ──────────────────────────────────────────── -->
 <div class="modal fade" id="deleteModal" tabindex="-1">
   <div class="modal-dialog modal-dialog-centered">
@@ -1022,6 +1088,150 @@ function confirmDelete(id, name) {
   document.getElementById('deleteReason').value = '';
   new bootstrap.Modal(document.getElementById('deleteModal')).show();
 }
+
+{% if can_notes %}
+// ── AI Interview Questions (Feature 2) ──────────────────────────────────────
+const AI_APPLICANT_ID   = {{ applicant.id }};
+const AI_APPLICANT_NAME = {{ applicant.name|tojson }};
+
+function aiQuestionsLoadingHtml() {
+  return (
+    '<div class="d-flex flex-column align-items-center justify-content-center py-5">' +
+      '<div class="spinner-border text-success mb-3" role="status">' +
+        '<span class="visually-hidden">Generating…</span>' +
+      '</div>' +
+      '<div class="text-muted small">' +
+        'AI is reading the resume and drafting 10 tailored questions… ' +
+        'this usually takes 5–10 seconds.' +
+      '</div>' +
+    '</div>'
+  );
+}
+
+function aiQuestionsErrorHtml(msg) {
+  // Render an error inline with a Try again button
+  const safe = String(msg || 'Unknown error');
+  const wrap = document.createElement('div');
+  wrap.innerHTML =
+    '<div class="alert alert-warning d-flex align-items-start gap-2 mb-3">' +
+      '<i class="bi bi-exclamation-triangle-fill flex-shrink-0 mt-1"></i>' +
+      '<div></div>' +
+    '</div>' +
+    '<div class="text-center">' +
+      '<button type="button" class="btn btn-outline-success" id="aiQuestionsRetryBtn">' +
+        '<i class="bi bi-arrow-clockwise me-1"></i>Try again' +
+      '</button>' +
+    '</div>';
+  wrap.querySelector('.alert div').textContent = safe;
+  return wrap.innerHTML;
+}
+
+function copyToClipboard(text, btn) {
+  const fallback = function() {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-1000px';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch(e) {}
+    document.body.removeChild(ta);
+  };
+  const flashOk = function(){
+    if (!btn) return;
+    const orig = btn.innerHTML;
+    btn.innerHTML = '<i class="bi bi-check2"></i>';
+    btn.classList.add('btn-success');
+    btn.classList.remove('btn-outline-secondary');
+    setTimeout(function(){
+      btn.innerHTML = orig;
+      btn.classList.remove('btn-success');
+      btn.classList.add('btn-outline-secondary');
+    }, 1200);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(flashOk, function(){ fallback(); flashOk(); });
+  } else {
+    fallback();
+    flashOk();
+  }
+}
+
+function renderAiQuestions(questions, position) {
+  const list = document.createElement('ol');
+  list.className = 'mb-0';
+  list.style.fontSize = '0.95rem';
+  list.style.lineHeight = '1.55';
+  questions.forEach(function(q){
+    const li = document.createElement('li');
+    li.className = 'mb-3 d-flex align-items-start gap-2';
+    const text = document.createElement('span');
+    text.className = 'flex-grow-1';
+    text.textContent = q;
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'btn btn-sm btn-outline-secondary flex-shrink-0';
+    copyBtn.setAttribute('title', 'Copy this question');
+    copyBtn.innerHTML = '<i class="bi bi-clipboard"></i>';
+    copyBtn.addEventListener('click', function(){ copyToClipboard(q, copyBtn); });
+    li.appendChild(text);
+    li.appendChild(copyBtn);
+    list.appendChild(li);
+  });
+  const wrap = document.createElement('div');
+  if (position) {
+    const banner = document.createElement('div');
+    banner.className = 'alert alert-success py-2 small mb-3';
+    banner.innerHTML =
+      '<i class="bi bi-bullseye me-1"></i>Position: <strong></strong>';
+    banner.querySelector('strong').textContent = position;
+    wrap.appendChild(banner);
+  }
+  wrap.appendChild(list);
+  const copyAllWrap = document.createElement('div');
+  copyAllWrap.className = 'text-center mt-3 pt-3 border-top';
+  const copyAll = document.createElement('button');
+  copyAll.type = 'button';
+  copyAll.id = 'aiQuestionsCopyAll';
+  copyAll.className = 'btn btn-outline-success';
+  copyAll.innerHTML = '<i class="bi bi-clipboard-check me-1"></i>Copy all 10 questions';
+  copyAll.addEventListener('click', function(){
+    copyToClipboard(questions.join('\n'), copyAll);
+  });
+  copyAllWrap.appendChild(copyAll);
+  wrap.appendChild(copyAllWrap);
+  return wrap;
+}
+
+async function generateAiQuestions() {
+  const body = document.getElementById('aiQuestionsBody');
+  body.innerHTML = aiQuestionsLoadingHtml();
+  let resp, data;
+  try {
+    resp = await fetch('/api/ai/interview-questions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ applicant_id: AI_APPLICANT_ID }),
+    });
+    data = await resp.json();
+  } catch (e) {
+    body.innerHTML = aiQuestionsErrorHtml(
+      'Connection error — please check your network and try again.');
+    const btn = document.getElementById('aiQuestionsRetryBtn');
+    if (btn) btn.addEventListener('click', generateAiQuestions);
+    return;
+  }
+  if (!resp.ok || !data || data.ok !== true || !Array.isArray(data.questions)) {
+    const msg = (data && data.message) || 'AI service returned an error.';
+    body.innerHTML = aiQuestionsErrorHtml(msg);
+    const btn = document.getElementById('aiQuestionsRetryBtn');
+    if (btn) btn.addEventListener('click', generateAiQuestions);
+    return;
+  }
+  body.innerHTML = '';
+  body.appendChild(renderAiQuestions(data.questions, data.position || ''));
+}
+{% endif %}
 </script>
 
 <script>

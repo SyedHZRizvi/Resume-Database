@@ -91,6 +91,10 @@
     <input type="hidden" id="confirmedDuplicate" name="confirmed_duplicate" value="">
     <!-- Set by JS when user chooses "Update existing record" via the modal -->
     <input type="hidden" id="updateExistingId" name="update_existing_id" value="">
+    <!-- AI-detected skills (JSON list of strings). Populated by the resume
+         parser and the chip UI below it. Server falls back to the comma-
+         separated `skills` field if this is empty or malformed. -->
+    <input type="hidden" name="skills_tags" id="skillsTagsHidden" value="{{ form.get('skills_tags', '') }}">
 
     <!-- Section 1: Personal Information -->
     <div class="card border-0 shadow-sm mb-4">
@@ -309,6 +313,15 @@
             <div class="form-text">
               <i class="bi bi-lightbulb text-warning me-1"></i>
               Separate skills with commas. These will appear as tags and are searchable.
+            </div>
+
+            <!-- AI-detected skill chips — populated by the parse-resume call. -->
+            <div class="mt-3" id="skillsChipsBlock" style="display:none">
+              <div class="form-label fw-semibold small mb-1">
+                <i class="bi bi-stars text-success me-1"></i>AI-detected skills
+                <span class="text-muted fw-normal ms-1">(click × to remove a chip before saving)</span>
+              </div>
+              <div id="skillsChipsDisplay" class="d-flex flex-wrap gap-2"></div>
             </div>
           </div>
 
@@ -605,6 +618,66 @@ document.getElementById('resume_file').addEventListener('change', function () {
   }
 });
 
+// ── AI-detected skill chips ──────────────────────────────────────────────────
+// `setSkillsChips(list)` renders the chip list AND keeps the hidden
+// `skills_tags` input (JSON string) in sync so the server-side handler
+// gets a normalised payload regardless of how the user edited the chips.
+function setSkillsChips(list) {
+  const safe = (Array.isArray(list) ? list : [])
+    .map(s => String(s || '').trim())
+    .filter(Boolean);
+  // Dedupe case-insensitively, keep first-occurrence casing
+  const seen = new Set();
+  const dedup = [];
+  for (const s of safe) {
+    const k = s.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    dedup.push(s);
+    if (dedup.length >= 20) break;
+  }
+  document.getElementById('skillsTagsHidden').value =
+    dedup.length ? JSON.stringify(dedup) : '';
+  const block   = document.getElementById('skillsChipsBlock');
+  const display = document.getElementById('skillsChipsDisplay');
+  if (!block || !display) return;
+  display.innerHTML = '';
+  if (!dedup.length) {
+    block.style.display = 'none';
+    return;
+  }
+  block.style.display = '';
+  dedup.forEach(skill => {
+    const chip = document.createElement('span');
+    chip.className = 'tc-skill-chip';
+    const text = document.createTextNode(skill);
+    chip.appendChild(text);
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'tc-skill-x';
+    x.setAttribute('aria-label', 'Remove ' + skill);
+    x.textContent = '×';
+    x.addEventListener('click', function(){
+      const remaining = dedup.filter(s => s.toLowerCase() !== skill.toLowerCase());
+      setSkillsChips(remaining);
+    });
+    chip.appendChild(x);
+    display.appendChild(chip);
+  });
+}
+
+// Hydrate the chip block from any value the server sent back (e.g. when the
+// form failed validation and is being re-rendered with the user's input).
+(function(){
+  const hidden = document.getElementById('skillsTagsHidden');
+  if (hidden && hidden.value) {
+    try {
+      const parsed = JSON.parse(hidden.value);
+      if (Array.isArray(parsed)) setSkillsChips(parsed);
+    } catch(e) { /* ignore malformed */ }
+  }
+})();
+
 // ── Auto-Fill from Resume ─────────────────────────────────────────────────────
 async function autoFillFromResume() {
   const fileInput = document.getElementById('resume_file');
@@ -672,6 +745,15 @@ async function autoFillFromResume() {
           break;
         }
       }
+    }
+
+    // AI-detected skill chips — populate hidden input + visible chip list
+    if (Array.isArray(data.skills_array) && data.skills_array.length) {
+      setSkillsChips(data.skills_array);
+      filled++;
+    } else if (data.skills_tags) {
+      // Fallback if the server returned only the JSON string
+      try { setSkillsChips(JSON.parse(data.skills_tags) || []); } catch(e) {}
     }
 
     status.innerHTML = `

@@ -366,8 +366,49 @@ def check_css(css_src: str) -> None:
                 '.tc-status-badge', '.tc-status-active',
                 '.tc-status-on-leave', '.tc-status-exited',
                 # Office-supplies tokens
-                '.tc-stock-low', '.tc-move-badge'):
+                '.tc-stock-low', '.tc-move-badge',
+                # AI-detected skill chips (Feature 1, §2.7)
+                '.tc-skill-chip'):
         must_match(css_src, cls, f'{cls} class defined')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# §10c  AI bundle — Features 1 (skills_tags) + 2 (/api/ai/interview-questions)
+#                  + 3 (semantic dedup via difflib). See CLAUDE.md §2.7.
+# ─────────────────────────────────────────────────────────────────────────────
+def check_ai_bundle(app_src: str) -> None:
+    section('AI bundle (skills tags, interview Q&A, semantic dedup)')
+    # Feature 1 + 3 — schema migrations. Allow column alignment whitespace
+    # between the column name and the TEXT type so the check survives
+    # formatter changes.
+    must_regex(app_src, r"\('skills_tags',\s*'TEXT'\)",
+               "applicants.skills_tags migration line present")
+    must_regex(app_src, r"\('identity_fingerprint',\s*'TEXT'\)",
+               "applicants.identity_fingerprint migration line present")
+    # Feature 1 — PARSE_PROMPT contract addition
+    must_match(app_src, "'skills_array'",
+               "'skills_array' literal present (PARSE_PROMPT contract + parse-resume)")
+    # Feature 2 — the new AI interview-questions endpoint with both
+    # decorators stacked: @role_required(*CAN_NOTES) + a rate limit.
+    must_regex(
+        app_src,
+        r"@app\.route\('/api/ai/interview-questions'[^)]*\)\s*\n"
+        r"@role_required\(\*CAN_NOTES\)\s*\n"
+        r"@limiter\.limit\(",
+        '/api/ai/interview-questions has CAN_NOTES + rate-limit decorators',
+    )
+    # Feature 3 — semantic-dedup primitives
+    must_match(app_src, 'def _build_identity_fingerprint',
+               '_build_identity_fingerprint() helper defined')
+    must_match(app_src, 'import difflib',
+               'difflib imported (stdlib, no new deps)')
+    must_match(app_src, 'SequenceMatcher',
+               'difflib.SequenceMatcher referenced in semantic dedup')
+    # Persistent dismissals table
+    must_match(app_src, 'CREATE TABLE IF NOT EXISTS duplicate_dismissals',
+               'duplicate_dismissals table created in init_db')
+    must_match(app_src, '/admin/dismiss-semantic-dup',
+               'Semantic dedup dismissal POST route present')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -520,6 +561,7 @@ def main() -> int:
         check_staff_columns(app_src)
         check_staff_documents(app_src)
         check_supplies(app_src)
+        check_ai_bundle(app_src)
     if css_src:
         check_css(css_src)
     check_templates()

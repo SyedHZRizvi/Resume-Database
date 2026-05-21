@@ -446,7 +446,16 @@
           <span class="badge bg-primary rounded-pill ms-1" style="font-size:.75rem">{{ applicants|length }} results</span>
         {% endif %}
       </h5>
-      <div class="d-flex align-items-center gap-3">
+      <div class="d-flex align-items-center gap-2 flex-wrap">
+        {# AI-detected skill quick-filter (Feature 1). Live-filters the rows  #}
+        {# client-side — matches any chip on the row by case-insensitive     #}
+        {# substring. Empty input = show everything.                         #}
+        <div class="input-group input-group-sm" style="width:240px">
+          <span class="input-group-text bg-white"><i class="bi bi-stars text-success"></i></span>
+          <input type="text" id="skillChipFilter" class="form-control"
+                 placeholder="Filter by AI skill chip…"
+                 aria-label="Filter by AI-detected skill" />
+        </div>
         <small class="text-muted d-none d-md-inline">Click a name to view the full resume</small>
       </div>
     </div>
@@ -471,7 +480,14 @@
             <tbody>
               {% for a in applicants %}
               {% set is_career = a.source and a.source.startswith('Career Website') %}
-              <tr class="applicant-row{% if is_career %} career-row{% endif %}">
+              {# data-skill-chips: pipe-separated lowercase skill list used by
+                 the live "Filter by AI skill chip" input on this page.
+                 Falls back to the legacy comma-separated skills field if no
+                 AI tags are stored (older rows pre-Feature-1). #}
+              {% set _chip_blob = (a.skills_tags or '') %}
+              {% if not _chip_blob %}{% set _chip_blob = (a.skills or '') %}{% endif %}
+              <tr class="applicant-row{% if is_career %} career-row{% endif %}"
+                  data-skill-chips="{{ _chip_blob|lower }}">
                 <td class="ps-4 text-muted">{{ loop.index }}</td>
 
                 <td>
@@ -728,6 +744,25 @@ function confirmDelete(id, name) {
 document.querySelectorAll('#filterForm input, #filterForm select').forEach(el => {
   el.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('filterForm').submit(); });
 });
+
+// ── Live "Filter by AI skill chip" (Feature 1) ────────────────────────────
+// Matches any chip whose lowercased text contains the substring the user
+// typed. Hides rows that don't match by toggling display:none — keeps the
+// existing server-side filters intact.
+(function(){
+  const input = document.getElementById('skillChipFilter');
+  if (!input) return;
+  const rows = Array.from(document.querySelectorAll('tr.applicant-row'));
+  function apply() {
+    const q = input.value.trim().toLowerCase();
+    rows.forEach(function(r){
+      if (!q) { r.style.display = ''; return; }
+      const blob = r.getAttribute('data-skill-chips') || '';
+      r.style.display = blob.indexOf(q) === -1 ? 'none' : '';
+    });
+  }
+  input.addEventListener('input', apply);
+})();
 </script>
 
 <script>

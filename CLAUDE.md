@@ -290,6 +290,76 @@ stock. `current_qty` is clamped at zero (never negative).
 form also records an opening-stock Restock movement on day one when the
 starting quantity is non-zero.
 
+### 2.7 AI bundle — skills auto-tag, interview Q&A, semantic dedup
+
+Three related AI-powered features that share the Anthropic client and the
+`applicants` table. Implemented together; treat them as one slice.
+
+**Applicant columns (added 2026-05-21):**
+
+```
+applicants.skills_tags           -- JSON-encoded list of normalised skill
+                                 -- chips (5–15 short strings). Empty string
+                                 -- when no tags are known. Rendered as
+                                 -- .tc-skill-chip pills on view_resume.html
+                                 -- and powers the "Filter by AI skill chip"
+                                 -- live input on the applicants list.
+applicants.identity_fingerprint  -- Normalised "name|specialty|education|year"
+                                 -- token built by _build_identity_fingerprint().
+                                 -- Compared pairwise via difflib.SequenceMatcher
+                                 -- on the dedup page (Feature 3). Empty
+                                 -- string when the row hasn't been backfilled
+                                 -- yet — the dedup page lazily backfills
+                                 -- every visit.
+```
+
+**PARSE_PROMPT contract addition** — the JSON schema sent to Claude now
+includes a `skills_array` key alongside the existing legacy keys (name,
+email, phone, specialty, years_experience, highest_education, skills, notes,
+linkedin_url, github_url). `skills_array` is a JSON array of 5–15 short tags
+(e.g. `["Python", "PostgreSQL", "Team Lead"]`). The /parse-resume route
+normalises this server-side (trim, dedupe case-insensitively, cap at 20)
+and surfaces both `skills_array` (list) AND `skills_tags` (JSON string) in
+the response. The add/edit forms keep both in sync via a hidden input;
+server falls back to splitting the comma-separated `skills` field when the
+hidden input is missing or malformed.
+
+**`/api/ai/interview-questions` route (Feature 2):**
+  • Method: POST, JSON body `{applicant_id, position_override?}`.
+  • Role gate: `@role_required(*CAN_NOTES)` — same group that records
+    interviews (super_admin, hr_manager, recruiter, hiring_manager).
+  • Rate limit: `@limiter.limit('20/hour;100/day')` to cap Anthropic spend
+    per signed-in user. **Do not relax** — the AI charge per call is real
+    money.
+  • NOT @csrf.exempt — the existing csrf-shim sends the X-CSRFToken header.
+  • Validates the model response: must be a JSON object with a `questions`
+    list of 5–15 strings; anything else returns
+    `{ok:false, message:"AI response was unparseable, please try again"}`.
+  • Logged via `log_action('AI INTERVIEW QUESTIONS', ...)` so spend is
+    auditable.
+
+**Semantic dedup approach (Feature 3)** — intentionally heuristic, NOT an
+ML/embeddings approach. Keep it that way:
+  • `_build_identity_fingerprint(name, specialty, notes, highest_education)`
+    returns a lowercased, alphanumeric-only `"name|specialty|education|year"`
+    token. Year hint is the first 4-digit 19xx/20xx in `notes`.
+  • `_find_semantic_dupes()` walks every applicant pairwise and surfaces
+    pairs with `difflib.SequenceMatcher.ratio() >= 0.85`. Excludes IDs
+    already flagged by the existing hash-based detection. Capped at top
+    50 clusters by score so the page stays fast even on a large pool.
+  • Persistent dismissals live in the new `duplicate_dismissals` table
+    `(id, applicant_a, applicant_b, dismissed_by, dismissed_at)` with a
+    UNIQUE index on `(applicant_a, applicant_b)` — pairs are always
+    stored low-id-first so a swap doesn't break dedup.
+  • The dismiss form posts to `/admin/dismiss-semantic-dup` which is
+    `@role_required(*CAN_USERS)` (same gate as the dedup page itself).
+  • Threshold and cluster cap live as module-level constants:
+    `_SEMANTIC_DEDUP_THRESHOLD = 0.85` and `_SEMANTIC_DEDUP_MAX_CLUSTERS = 50`.
+
+**No new dependencies** — `difflib` is stdlib. The Anthropic client is the
+same one /parse-resume already uses. Do not add `sklearn`, embeddings,
+vector databases, or any other ML stack for this feature.
+
 ---
 
 ## 3. Design tokens — match these when adding new UI

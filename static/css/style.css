@@ -471,6 +471,24 @@ body {
   font-size: 0.85rem;
 }
 
+/* ── AI-detected skill chips (applicant detail + add/edit + list filter) ─── */
+/* Blue family so they're visually distinct from the green property badges
+   used for staff-equipment chips. Includes an inline × button used on the
+   add/edit form to remove a chip before saving. */
+.tc-skill-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 9px; border-radius: 12px;
+  background: #dbeafe; color: #1e3a8a;
+  border: 1px solid #bfdbfe;
+  font-size: 0.75rem; font-weight: 500;
+  white-space: nowrap;
+}
+.tc-skill-chip .tc-skill-x {
+  background: none; border: none; padding: 0 0 0 2px;
+  color: inherit; opacity: 0.6; cursor: pointer; line-height: 1;
+}
+.tc-skill-chip .tc-skill-x:hover { opacity: 1; }
+
 /* HR notes cell — clamp long text to 2 lines, full text available via title attr */
 .tc-notes-cell {
   display: -webkit-box;
