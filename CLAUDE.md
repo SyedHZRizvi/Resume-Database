@@ -181,7 +181,19 @@ reason.
 5. **New pages** must follow the navbar pattern from §2.1 and include the
    CSRF meta tag + fetch shim + tooltip-init script at the bottom (copy
    from any existing template).
-6. **Run the local smoke check** before pushing:
+6. **Run the baseline verifier before pushing.** Any drift from the
+   invariants in this file (CSRF on every form, RLS migration intact,
+   navbar still icon-only, security headers still emitted, no
+   reintroduced enumeration messages, etc.) is caught here:
+   ```bash
+   python3 scripts/verify-baseline.py
+   ```
+   Exit code 0 → safe to push. Non-zero → the script tells you exactly
+   which rule drifted and what file/string it was looking for. If the
+   change is intentional (the user asked for it), update **both** this
+   file (CLAUDE.md) AND the check in `scripts/verify-baseline.py` in
+   the same commit, then re-run until it passes.
+7. **Syntax sanity check** (optional, faster):
    ```bash
    python3 -c "
    import jinja2, os
@@ -192,7 +204,7 @@ reason.
    print('OK')
    "
    ```
-7. **Deploy verification:** after `git push origin main`, poll the live
+8. **Deploy verification:** after `git push origin main`, poll the live
    site (`https://resume-database-ocwa.onrender.com`) for ~90 seconds.
    The deploy is live when newly added CSS/HTML appears.
 
