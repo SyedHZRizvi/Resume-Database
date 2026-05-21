@@ -410,3 +410,74 @@ body {
   border-top-color:    #1f2937;
   border-bottom-color: #1f2937;
 }
+
+/* ── Staff directory: company-property chips + badges ─────────────────────── */
+/* Quick-pick chip buttons shown under the "Company Property" input. Clicking
+   a chip toggles the item's presence in the comma-separated input. Active
+   chips have a filled green appearance. */
+.tc-property-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.tc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 16px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #475569;
+  font-size: 0.78rem;
+  font-weight: 500;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+.tc-chip i.bi {
+  font-size: 0.85rem;
+}
+.tc-chip:hover {
+  border-color: #6DC49A;
+  background: #f0fdf6;
+  color: #166534;
+}
+.tc-chip.active {
+  background: #6DC49A;
+  border-color: #6DC49A;
+  color: #ffffff;
+}
+.tc-chip.active:hover {
+  background: #5cb389;
+  border-color: #5cb389;
+}
+
+/* Property badges in the table — read-only chips per item. */
+.tc-property-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 12px;
+  background: #ecfdf5;
+  color: #166534;
+  border: 1px solid #d1fae5;
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.tc-property-badge i.bi {
+  font-size: 0.85rem;
+}
+
+/* HR notes cell — clamp long text to 2 lines, full text available via title attr */
+.tc-notes-cell {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.4;
+  white-space: normal;
+}

@@ -518,6 +518,22 @@ def init_db():
             )
         ''')
 
+        # ── Migrate staff table — company property + HR notes ──────────────
+        # company_property: comma-separated list of issued items (e.g.
+        #                   "Access Card, Laptop, Phone"). Used at offboarding
+        #                   so HR can tick items back in when staff leaves.
+        # notes:            free-text HR note about the employee or about
+        #                   property return status. Sensitive — only visible
+        #                   to Super Admin / HR Manager.
+        for col, definition in [
+            ('company_property', 'TEXT'),
+            ('notes',            'TEXT'),
+        ]:
+            try:
+                conn.execute(f'ALTER TABLE staff ADD COLUMN {col} {definition}')
+            except Exception:
+                pass
+
         # ── Migrate interviews table — new notification columns ─────────────
         for col, definition in [
             ('interview_time',     'TEXT'),
@@ -4433,20 +4449,41 @@ def staff_list():
     return render_template('staff.html', staff=staff, can_staff=can_staff)
 
 
+def _clean_property_list(raw: str) -> str:
+    """Normalize a comma-separated property list: trim each item, drop
+    empties and duplicates (case-insensitive), keep original casing of the
+    first occurrence. Returns a single comma+space-joined string."""
+    seen = set()
+    out  = []
+    for item in (raw or '').split(','):
+        item = item.strip()
+        if not item:
+            continue
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return ', '.join(out)
+
+
 @app.route('/staff/add', methods=['POST'])
 @role_required(*CAN_STAFF)
 def staff_add():
-    name        = request.form.get('name', '').strip()
-    email       = request.form.get('email', '').strip()
-    designation = request.form.get('designation', '').strip()
-    department  = request.form.get('department', '').strip()
+    name             = request.form.get('name', '').strip()
+    email            = request.form.get('email', '').strip()
+    designation      = request.form.get('designation', '').strip()
+    department       = request.form.get('department', '').strip()
+    company_property = _clean_property_list(request.form.get('company_property', ''))
+    notes            = request.form.get('notes', '').strip()
     if not name:
         flash('Name is required.', 'error')
         return redirect(url_for('staff_list'))
     with get_db() as conn:
         conn.execute(
-            'INSERT INTO staff (name, email, designation, department) VALUES (?,?,?,?)',
-            (name, email, designation, department)
+            'INSERT INTO staff (name, email, designation, department, '
+            'company_property, notes) VALUES (?,?,?,?,?,?)',
+            (name, email, designation, department, company_property, notes)
         )
         conn.commit()
     flash(f'{name} added to staff directory.', 'success')
@@ -4456,17 +4493,21 @@ def staff_add():
 @app.route('/staff/edit/<int:staff_id>', methods=['POST'])
 @role_required(*CAN_STAFF)
 def staff_edit(staff_id):
-    name        = request.form.get('name', '').strip()
-    email       = request.form.get('email', '').strip()
-    designation = request.form.get('designation', '').strip()
-    department  = request.form.get('department', '').strip()
+    name             = request.form.get('name', '').strip()
+    email            = request.form.get('email', '').strip()
+    designation      = request.form.get('designation', '').strip()
+    department       = request.form.get('department', '').strip()
+    company_property = _clean_property_list(request.form.get('company_property', ''))
+    notes            = request.form.get('notes', '').strip()
     if not name:
         flash('Name is required.', 'error')
         return redirect(url_for('staff_list'))
     with get_db() as conn:
         conn.execute(
-            'UPDATE staff SET name=?, email=?, designation=?, department=? WHERE id=?',
-            (name, email, designation, department, staff_id)
+            'UPDATE staff SET name=?, email=?, designation=?, department=?, '
+            'company_property=?, notes=? WHERE id=?',
+            (name, email, designation, department,
+             company_property, notes, staff_id)
         )
         conn.commit()
     flash(f'{name} updated successfully.', 'success')

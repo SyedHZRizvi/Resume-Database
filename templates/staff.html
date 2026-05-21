@@ -80,7 +80,7 @@
           </h6>
         </div>
         <div class="card-body px-4 py-3">
-          <form method="POST" action="{{ url_for('staff_add') }}">
+          <form method="POST" action="{{ url_for('staff_add') }}" id="addStaffForm">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="row g-2 align-items-end">
               <div class="col-12 col-md-3">
@@ -93,15 +93,40 @@
                 <input type="email" name="email" class="form-control form-control-sm"
                        placeholder="sarah@transcrypts.com" />
               </div>
-              <div class="col-12 col-md-2">
+              <div class="col-12 col-md-3">
                 <label class="form-label fw-semibold small">Designation / Title</label>
                 <input type="text" name="designation" class="form-control form-control-sm"
                        placeholder="e.g. HR Manager" />
               </div>
-              <div class="col-12 col-md-2">
+              <div class="col-12 col-md-3">
                 <label class="form-label fw-semibold small">Department</label>
                 <input type="text" name="department" class="form-control form-control-sm"
                        placeholder="e.g. Engineering" />
+              </div>
+              <div class="col-12 col-md-7">
+                <label class="form-label fw-semibold small">
+                  <i class="bi bi-box-seam text-warning me-1"></i>Company Property Issued
+                </label>
+                <input type="text" name="company_property" id="addPropertyInput"
+                       class="form-control form-control-sm tc-property-input"
+                       placeholder="Comma-separated, e.g. Access Card, Laptop, Phone" />
+                <div class="tc-property-chips mt-2" data-target="addPropertyInput">
+                  <button type="button" class="tc-chip" data-item="Access Card"><i class="bi bi-credit-card-2-front"></i> Access Card</button>
+                  <button type="button" class="tc-chip" data-item="Laptop"><i class="bi bi-laptop"></i> Laptop</button>
+                  <button type="button" class="tc-chip" data-item="Mouse"><i class="bi bi-mouse2"></i> Mouse</button>
+                  <button type="button" class="tc-chip" data-item="Keyboard"><i class="bi bi-keyboard"></i> Keyboard</button>
+                  <button type="button" class="tc-chip" data-item="Phone"><i class="bi bi-phone"></i> Phone</button>
+                  <button type="button" class="tc-chip" data-item="Headset"><i class="bi bi-headset"></i> Headset</button>
+                  <button type="button" class="tc-chip" data-item="Monitor"><i class="bi bi-display"></i> Monitor</button>
+                  <button type="button" class="tc-chip" data-item="Charger"><i class="bi bi-plug"></i> Charger</button>
+                </div>
+              </div>
+              <div class="col-12 col-md-3">
+                <label class="form-label fw-semibold small">
+                  <i class="bi bi-sticky text-info me-1"></i>HR Notes
+                </label>
+                <textarea name="notes" rows="3" class="form-control form-control-sm"
+                          placeholder="Optional — internal note about this employee or returns…"></textarea>
               </div>
               <div class="col-12 col-md-2">
                 <button type="submit" class="btn btn-success btn-sm w-100">
@@ -132,7 +157,9 @@
                 <th class="text-muted fw-semibold">Email</th>
                 <th class="text-muted fw-semibold">Designation</th>
                 <th class="text-muted fw-semibold">Department</th>
+                <th class="text-muted fw-semibold">Company Property</th>
                 {% if can_staff %}
+                <th class="text-muted fw-semibold">HR Notes</th>
                 <th class="text-muted fw-semibold text-center pe-4" style="width:120px">Actions</th>
                 {% endif %}
               </tr>
@@ -150,12 +177,34 @@
                 </td>
                 <td class="text-muted">{{ s.designation or '—' }}</td>
                 <td class="text-muted">{{ s.department or '—' }}</td>
+                <td>
+                  {% if s.company_property %}
+                    <div class="d-flex flex-wrap gap-1">
+                      {% for item in s.company_property.split(',') %}
+                        {% set item_clean = item.strip() %}
+                        {% if item_clean %}
+                          <span class="tc-property-badge" data-item="{{ item_clean|lower }}">
+                            <i class="bi bi-{% if 'card' in item_clean.lower() %}credit-card-2-front{% elif 'laptop' in item_clean.lower() or 'computer' in item_clean.lower() %}laptop{% elif 'mouse' in item_clean.lower() %}mouse2{% elif 'keyboard' in item_clean.lower() %}keyboard{% elif 'phone' in item_clean.lower() %}phone{% elif 'headset' in item_clean.lower() or 'headphone' in item_clean.lower() %}headset{% elif 'monitor' in item_clean.lower() or 'display' in item_clean.lower() %}display{% elif 'charger' in item_clean.lower() or 'cable' in item_clean.lower() %}plug{% else %}box-seam{% endif %}"></i>
+                            {{ item_clean }}
+                          </span>
+                        {% endif %}
+                      {% endfor %}
+                    </div>
+                  {% else %}
+                    <span class="text-muted">—</span>
+                  {% endif %}
+                </td>
                 {% if can_staff %}
+                <td class="text-muted small" style="max-width:260px">
+                  {% if s.notes %}
+                    <span class="tc-notes-cell" title="{{ s.notes }}">{{ s.notes }}</span>
+                  {% else %}—{% endif %}
+                </td>
                 <td class="text-center pe-4">
                   <div class="d-flex gap-1 justify-content-center">
                     <!-- Edit button -->
                     <button type="button" class="btn btn-sm btn-outline-primary" title="Edit"
-                            onclick='openEdit({{ s.id }}, {{ s.name|tojson }}, {{ (s.email or "")|tojson }}, {{ (s.designation or "")|tojson }}, {{ (s.department or "")|tojson }})'>
+                            onclick='openEdit({{ s.id }}, {{ s.name|tojson }}, {{ (s.email or "")|tojson }}, {{ (s.designation or "")|tojson }}, {{ (s.department or "")|tojson }}, {{ (s.company_property or "")|tojson }}, {{ (s.notes or "")|tojson }})'>
                       <i class="bi bi-pencil-fill"></i>
                     </button>
                     <!-- Delete button -->
@@ -203,24 +252,55 @@
       <form id="editForm" method="POST" action="">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <div class="modal-body pt-3">
-          <div class="mb-3">
-            <label class="form-label fw-semibold small">Full Name <span class="text-danger">*</span></label>
-            <input type="text" name="name" id="editName" class="form-control" required />
-          </div>
-          <div class="mb-3">
-            <label class="form-label fw-semibold small">Email</label>
-            <input type="email" name="email" id="editEmail" class="form-control"
-                   placeholder="email@transcrypts.com" />
-          </div>
-          <div class="mb-3">
-            <label class="form-label fw-semibold small">Designation / Title</label>
-            <input type="text" name="designation" id="editDesignation" class="form-control"
-                   placeholder="e.g. HR Manager, Tech Lead" />
-          </div>
-          <div class="mb-3">
-            <label class="form-label fw-semibold small">Department</label>
-            <input type="text" name="department" id="editDepartment" class="form-control"
-                   placeholder="e.g. Engineering, HR" />
+          <div class="row g-3">
+            <div class="col-12 col-md-6">
+              <label class="form-label fw-semibold small">Full Name <span class="text-danger">*</span></label>
+              <input type="text" name="name" id="editName" class="form-control" required />
+            </div>
+            <div class="col-12 col-md-6">
+              <label class="form-label fw-semibold small">Email</label>
+              <input type="email" name="email" id="editEmail" class="form-control"
+                     placeholder="email@transcrypts.com" />
+            </div>
+            <div class="col-12 col-md-6">
+              <label class="form-label fw-semibold small">Designation / Title</label>
+              <input type="text" name="designation" id="editDesignation" class="form-control"
+                     placeholder="e.g. HR Manager, Tech Lead" />
+            </div>
+            <div class="col-12 col-md-6">
+              <label class="form-label fw-semibold small">Department</label>
+              <input type="text" name="department" id="editDepartment" class="form-control"
+                     placeholder="e.g. Engineering, HR" />
+            </div>
+            <div class="col-12">
+              <label class="form-label fw-semibold small">
+                <i class="bi bi-box-seam text-warning me-1"></i>Company Property Issued
+              </label>
+              <input type="text" name="company_property" id="editPropertyInput"
+                     class="form-control tc-property-input"
+                     placeholder="Comma-separated, e.g. Access Card, Laptop, Phone" />
+              <div class="tc-property-chips mt-2" data-target="editPropertyInput">
+                <button type="button" class="tc-chip" data-item="Access Card"><i class="bi bi-credit-card-2-front"></i> Access Card</button>
+                <button type="button" class="tc-chip" data-item="Laptop"><i class="bi bi-laptop"></i> Laptop</button>
+                <button type="button" class="tc-chip" data-item="Mouse"><i class="bi bi-mouse2"></i> Mouse</button>
+                <button type="button" class="tc-chip" data-item="Keyboard"><i class="bi bi-keyboard"></i> Keyboard</button>
+                <button type="button" class="tc-chip" data-item="Phone"><i class="bi bi-phone"></i> Phone</button>
+                <button type="button" class="tc-chip" data-item="Headset"><i class="bi bi-headset"></i> Headset</button>
+                <button type="button" class="tc-chip" data-item="Monitor"><i class="bi bi-display"></i> Monitor</button>
+                <button type="button" class="tc-chip" data-item="Charger"><i class="bi bi-plug"></i> Charger</button>
+              </div>
+              <div class="form-text">
+                Click a chip to add/remove that item. Add custom items by typing them into the box (separate with commas).
+              </div>
+            </div>
+            <div class="col-12">
+              <label class="form-label fw-semibold small">
+                <i class="bi bi-sticky text-info me-1"></i>HR Notes
+                <span class="text-muted">(only visible to Super Admin / HR Manager)</span>
+              </label>
+              <textarea name="notes" id="editNotes" rows="4" class="form-control"
+                        placeholder="e.g. Returned access card on 2025-08-12. Laptop pending."></textarea>
+            </div>
           </div>
         </div>
         <div class="modal-footer border-0 pt-0">
@@ -235,14 +315,63 @@
 </div>
 
 <script>
-function openEdit(id, name, email, designation, department) {
-  document.getElementById('editName').value        = name;
-  document.getElementById('editEmail').value       = email;
-  document.getElementById('editDesignation').value = designation;
-  document.getElementById('editDepartment').value  = department;
-  document.getElementById('editForm').action       = '/staff/edit/' + id;
+function openEdit(id, name, email, designation, department, companyProperty, notes) {
+  document.getElementById('editName').value           = name;
+  document.getElementById('editEmail').value          = email;
+  document.getElementById('editDesignation').value    = designation;
+  document.getElementById('editDepartment').value     = department;
+  document.getElementById('editPropertyInput').value  = companyProperty || '';
+  document.getElementById('editNotes').value          = notes || '';
+  document.getElementById('editForm').action          = '/staff/edit/' + id;
+  // Refresh chip highlight state to match the input value
+  syncChipState(document.getElementById('editPropertyInput'));
   new bootstrap.Modal(document.getElementById('editModal')).show();
 }
+
+// ── Property chip toggle logic ────────────────────────────────────────────
+// Clicking a chip adds the item to the comma-separated input if absent, or
+// removes it if already present. Chip stays highlighted when its item is in
+// the list. Works for both the Add form and the Edit modal.
+function _propertyItems(input){
+  return (input.value || '').split(',').map(function(s){ return s.trim(); }).filter(Boolean);
+}
+function _writeItems(input, items){
+  // Dedupe case-insensitively, preserve original case
+  var seen = {}, out = [];
+  items.forEach(function(i){
+    var k = i.toLowerCase();
+    if (!seen[k] && i.length) { seen[k] = true; out.push(i); }
+  });
+  input.value = out.join(', ');
+}
+function syncChipState(input){
+  var group = input.parentElement.querySelector('.tc-property-chips');
+  if (!group) return;
+  var present = _propertyItems(input).map(function(s){ return s.toLowerCase(); });
+  group.querySelectorAll('.tc-chip').forEach(function(btn){
+    btn.classList.toggle('active', present.indexOf(btn.dataset.item.toLowerCase()) !== -1);
+  });
+}
+document.addEventListener('click', function(e){
+  var chip = e.target.closest('.tc-chip');
+  if (!chip) return;
+  var group = chip.closest('.tc-property-chips');
+  var input = document.getElementById(group.dataset.target);
+  if (!input) return;
+  var items = _propertyItems(input);
+  var lc    = chip.dataset.item.toLowerCase();
+  var idx   = items.findIndex(function(i){ return i.toLowerCase() === lc; });
+  if (idx === -1) items.push(chip.dataset.item);
+  else            items.splice(idx, 1);
+  _writeItems(input, items);
+  syncChipState(input);
+});
+// Live-sync chip highlight when user types in the input directly
+document.querySelectorAll('.tc-property-input').forEach(function(inp){
+  inp.addEventListener('input', function(){ syncChipState(inp); });
+});
+// Initial state on page load
+document.querySelectorAll('.tc-property-input').forEach(syncChipState);
 </script>
 {% endif %}
 
