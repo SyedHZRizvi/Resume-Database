@@ -512,3 +512,11 @@ body {
   color: #4b5563;
   border-color: #e5e7eb;
 }
+
+/* ── Document expiry colour codes (used inside the staff Documents modal) ── */
+.tc-doc-exp-ok   { color: #166534; }   /* green  — far away */
+.tc-doc-exp-warn { color: #854d0e; }   /* amber  — within 30 days */
+.tc-doc-exp-bad  { color: #991b1b; }   /* red    — already expired */
+
+/* Constrain the docs modal list so long filenames don't blow out the layout */
+#docList .min-width-0 { min-width: 0; }

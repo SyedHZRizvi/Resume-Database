@@ -277,6 +277,11 @@
                 </td>
                 <td class="text-center pe-4">
                   <div class="d-flex gap-1 justify-content-center">
+                    <!-- Documents button -->
+                    <button type="button" class="btn btn-sm btn-outline-secondary" title="Documents"
+                            onclick='openDocuments({{ s.id }}, {{ s.name|tojson }})'>
+                      <i class="bi bi-folder2-open"></i>
+                    </button>
                     <!-- Edit button -->
                     <button type="button" class="btn btn-sm btn-outline-primary" title="Edit"
                             onclick='openEdit({{ s.id }},
@@ -296,7 +301,7 @@
                     </button>
                     <!-- Delete button -->
                     <form method="POST" action="{{ url_for('staff_delete', staff_id=s.id) }}"
-                          onsubmit="return confirm('Remove {{ s.name }} from the staff directory?')">
+                          onsubmit="return confirm('Remove {{ s.name }} from the staff directory? All their uploaded documents will also be deleted.')">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                       <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove">
                         <i class="bi bi-trash3-fill"></i>
@@ -459,6 +464,192 @@
     </div>
   </div>
 </div>
+
+<!-- ── Staff Documents Modal ───────────────────────────────────────────────── -->
+<div class="modal fade" id="documentsModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content shadow">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title fw-bold">
+          <i class="bi bi-folder2-open text-primary me-2"></i>
+          Documents — <span id="docModalName" class="text-muted fw-semibold"></span>
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body pt-3">
+
+        <!-- ── Upload form ──────────────────────────────────────────────── -->
+        <div class="card border-0 shadow-sm mb-3">
+          <div class="card-body p-3">
+            <div class="text-muted small fw-semibold mb-2">
+              <i class="bi bi-cloud-arrow-up me-1"></i>Upload a new document
+            </div>
+            <form id="docUploadForm" method="POST" action="" enctype="multipart/form-data">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="category" id="docCategoryInput" value="Contract">
+              <div class="row g-2 align-items-end">
+                <div class="col-12 col-md-5">
+                  <label class="form-label fw-semibold small">File</label>
+                  <input type="file" name="document" class="form-control form-control-sm" required>
+                  <div class="form-text">
+                    Allowed: PDF, DOC/DOCX, JPG/PNG, GIF, WEBP, BMP, TIFF. Max 32 MB.
+                  </div>
+                </div>
+                <div class="col-12 col-md-4">
+                  <label class="form-label fw-semibold small">Expiry date <span class="text-muted fw-normal">(optional)</span></label>
+                  <input type="date" name="expiry_date" class="form-control form-control-sm">
+                </div>
+                <div class="col-12 col-md-3">
+                  <button type="submit" class="btn btn-success btn-sm w-100">
+                    <i class="bi bi-upload me-1"></i>Upload
+                  </button>
+                </div>
+                <div class="col-12">
+                  <label class="form-label fw-semibold small mb-1">Category</label>
+                  <div class="tc-property-chips" id="docCategoryChips">
+                    {% for cat in staff_doc_categories %}
+                      <button type="button" class="tc-chip {% if loop.first %}active{% endif %}"
+                              data-category="{{ cat }}">
+                        <i class="bi bi-{% if cat == 'Contract' %}file-earmark-text{% elif cat == 'ID' %}person-vcard{% elif cat == 'Visa' %}airplane{% elif cat == 'Passport' %}journal-bookmark{% elif cat == 'Tax Form' %}receipt{% elif cat == 'Certificate' %}patch-check{% elif cat == 'NDA' %}shield-lock{% else %}file-earmark{% endif %}"></i>
+                        {{ cat }}
+                      </button>
+                    {% endfor %}
+                  </div>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <!-- ── Existing documents list ──────────────────────────────────── -->
+        <div class="text-muted small fw-semibold mb-2">
+          <i class="bi bi-files me-1"></i>Existing documents
+          <span id="docCount" class="text-muted fw-normal"></span>
+        </div>
+        <div id="docList" class="vstack gap-2">
+          <div class="text-center text-muted small py-3">Loading…</div>
+        </div>
+
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── Documents modal logic ───────────────────────────────────────────────
+function openDocuments(staffId, staffName) {
+  document.getElementById('docModalName').textContent = staffName;
+  document.getElementById('docUploadForm').action     = '/staff/' + staffId + '/documents';
+  // Default category back to Contract on each open
+  document.getElementById('docCategoryInput').value   = 'Contract';
+  document.querySelectorAll('#docCategoryChips .tc-chip').forEach(function(b){
+    b.classList.toggle('active', b.dataset.category === 'Contract');
+  });
+  // Reset file input + expiry
+  var form = document.getElementById('docUploadForm');
+  form.querySelector('input[type="file"]').value = '';
+  form.querySelector('input[name="expiry_date"]').value = '';
+  // Show modal and fetch the list
+  new bootstrap.Modal(document.getElementById('documentsModal')).show();
+  refreshDocumentList(staffId);
+}
+
+// Single-select chip behaviour for document category
+document.getElementById('docCategoryChips').addEventListener('click', function(e){
+  var chip = e.target.closest('.tc-chip');
+  if (!chip) return;
+  document.querySelectorAll('#docCategoryChips .tc-chip').forEach(function(b){
+    b.classList.toggle('active', b === chip);
+  });
+  document.getElementById('docCategoryInput').value = chip.dataset.category;
+});
+
+function refreshDocumentList(staffId){
+  var listEl  = document.getElementById('docList');
+  var countEl = document.getElementById('docCount');
+  listEl.innerHTML = '<div class="text-center text-muted small py-3">Loading…</div>';
+  countEl.textContent = '';
+  fetch('/staff/' + staffId + '/documents', { credentials: 'same-origin' })
+    .then(function(r){ return r.json(); })
+    .then(function(data){
+      if (!data.ok) {
+        listEl.innerHTML = '<div class="text-danger small py-3">' +
+          (data.message || 'Could not load documents.') + '</div>';
+        return;
+      }
+      countEl.textContent = '(' + data.documents.length + ')';
+      if (!data.documents.length) {
+        listEl.innerHTML =
+          '<div class="text-center text-muted small py-4 border rounded">' +
+            '<i class="bi bi-inbox display-6 d-block opacity-50 mb-2"></i>' +
+            'No documents uploaded yet.' +
+          '</div>';
+        return;
+      }
+      listEl.innerHTML = data.documents.map(function(d){ return renderDocRow(d); }).join('');
+    })
+    .catch(function(err){
+      listEl.innerHTML = '<div class="text-danger small py-3">Error: ' + err + '</div>';
+    });
+}
+
+function renderDocRow(d){
+  // Expiry: red if past, amber within 30 days, normal otherwise.
+  var expHtml = '<span class="text-muted small">no expiry</span>';
+  if (d.expiry_date) {
+    var today  = new Date(); today.setHours(0,0,0,0);
+    var exp    = new Date(d.expiry_date + 'T00:00:00');
+    var dDays  = Math.round((exp - today) / 86400000);
+    var cls    = 'tc-doc-exp-ok';
+    var label  = 'expires ' + d.expiry_date;
+    if (dDays < 0)       { cls = 'tc-doc-exp-bad';  label = 'EXPIRED ' + d.expiry_date; }
+    else if (dDays <= 30){ cls = 'tc-doc-exp-warn'; label = 'expires in ' + dDays + ' day' + (dDays===1?'':'s'); }
+    expHtml = '<span class="' + cls + ' small fw-semibold">' +
+              '<i class="bi bi-calendar-event me-1"></i>' + label + '</span>';
+  }
+  // Size human-readable
+  var size = d.size_bytes || 0;
+  var sizeLabel = size < 1024 ? (size + ' B') :
+                  size < 1048576 ? (Math.round(size/1024) + ' KB') :
+                                   ((size/1048576).toFixed(1) + ' MB');
+  var uploaded = (d.uploaded_by || 'unknown') +
+                 ' · ' + (d.uploaded_at || '').slice(0, 10);
+  var safeName = escapeHtml(d.original_name);
+  var safeCat  = escapeHtml(d.category);
+  return '' +
+    '<div class="card border-0 shadow-sm">' +
+      '<div class="card-body p-3 d-flex align-items-center gap-3">' +
+        '<i class="bi bi-file-earmark-text text-primary fs-3"></i>' +
+        '<div class="flex-grow-1 min-width-0">' +
+          '<div class="fw-semibold text-truncate" title="' + safeName + '">' + safeName + '</div>' +
+          '<div class="d-flex flex-wrap gap-2 align-items-center mt-1">' +
+            '<span class="tc-property-badge"><i class="bi bi-tag-fill"></i> ' + safeCat + '</span>' +
+            expHtml +
+            '<span class="text-muted small">' + sizeLabel + ' · ' + escapeHtml(uploaded) + '</span>' +
+          '</div>' +
+        '</div>' +
+        '<a href="/staff/documents/' + d.id + '/download" class="btn btn-sm btn-outline-primary"' +
+        '   title="Download"><i class="bi bi-download"></i></a>' +
+        '<form method="POST" action="/staff/documents/' + d.id + '/delete" class="m-0"' +
+        '      onsubmit="return confirm(\'Delete &quot;' + safeName.replace(/"/g,"&quot;") + '&quot;? This cannot be undone.\')">' +
+          '<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">' +
+          '<button type="submit" class="btn btn-sm btn-outline-danger" title="Delete">' +
+            '<i class="bi bi-trash3-fill"></i>' +
+          '</button>' +
+        '</form>' +
+      '</div>' +
+    '</div>';
+}
+
+function escapeHtml(s){
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+  });
+}
+</script>
 
 <script>
 function openEdit(id, name, email, designation, department, companyProperty, notes,

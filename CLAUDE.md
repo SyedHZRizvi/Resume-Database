@@ -187,6 +187,45 @@ even select it. When a staff row is deleted, any other row that listed
 that person as `manager_id` is automatically NULLed out by `staff_delete`
 to prevent dangling references.
 
+### 2.5 Staff documents (contracts / IDs / visas)
+
+A separate `staff_documents` table holds HR file uploads per staff
+member. Sensitive — every route is `@role_required(*CAN_STAFF)`:
+
+```
+staff_documents:
+  id, staff_id (FK → staff.id),
+  category,          -- enum from STAFF_DOC_CATEGORIES (default 'Other')
+  original_name,     -- as uploaded
+  stored_filename,   -- 'staff-docs/<staff_id>/<timestamp>_<safe>.ext'
+  content_type, size_bytes,
+  expiry_date,       -- optional ISO yyyy-mm-dd; drives the modal's
+                     -- expired/expiring-soon colour badges
+  uploaded_by, uploaded_at
+```
+
+Files are stored via the shared `storage.py` module — same Supabase
+bucket as resumes, but under the path prefix `staff-docs/<staff_id>/`.
+Local-dev backend uses the same `uploads/` directory.
+
+**Categories** — `STAFF_DOC_CATEGORIES = ('Contract', 'ID', 'Visa',
+'Passport', 'Tax Form', 'Certificate', 'NDA', 'Other')`. The list is
+rendered as a single-select chip group (reuses `.tc-chip` styling with
+a hidden input). Adding a category requires updating the constant in
+app.py AND the icon-mapping in templates/staff.html.
+
+**Download must be Content-Disposition: attachment** — the verifier
+asserts this for both the local backend (`Response` with
+`Content-Disposition: attachment`) and the Supabase backend (signed URL
+with `download=1`). The same rule that protects resumes from inline
+HTML-as-PDF execution applies here.
+
+**Cascade on staff deletion** — `staff_delete` calls
+`_purge_staff_documents(conn, staff_id)` before removing the row. It
+best-effort deletes every file from storage and removes the rows. If a
+storage deletion fails, the file becomes an orphan (logged), but the DB
+stays consistent.
+
 ---
 
 ## 3. Design tokens — match these when adding new UI

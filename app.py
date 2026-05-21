@@ -613,6 +613,36 @@ def init_db():
         conn.execute("UPDATE users SET role='super_admin' WHERE role='admin'")
         conn.execute("UPDATE users SET role='recruiter'   WHERE role='user'")
 
+        # ── Staff documents ────────────────────────────────────────────────
+        # One row per uploaded HR document attached to a staff member
+        # (contracts, IDs, visas, certificates, NDAs, etc.). All access is
+        # gated by CAN_STAFF — these are sensitive PII files. Optional
+        # expiry_date drives expiring-soon and expired badges in the UI.
+        # Files themselves are stored via storage.py under the path prefix
+        # 'staff-docs/<staff_id>/<timestamp>_<safe_original>.ext'.
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS staff_documents (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                staff_id        INTEGER NOT NULL,
+                category        TEXT NOT NULL,
+                original_name   TEXT NOT NULL,
+                stored_filename TEXT NOT NULL,
+                content_type    TEXT,
+                size_bytes      INTEGER DEFAULT 0,
+                expiry_date     TEXT,
+                uploaded_by     TEXT,
+                uploaded_at     TEXT DEFAULT (datetime('now','localtime')),
+                FOREIGN KEY (staff_id) REFERENCES staff(id)
+            )
+        ''')
+        try:
+            conn.execute(
+                'CREATE INDEX IF NOT EXISTS idx_staff_documents_staff_id '
+                'ON staff_documents (staff_id)'
+            )
+        except Exception:
+            pass
+
         # ── Indeed inbox poll status (single-row state table) ────────────────
         # Exactly one row (id=1) is kept and upserted on every poll. Lets the
         # admin page show "Last run: …, processed N, created N" without having
@@ -4484,7 +4514,8 @@ def staff_list():
     can_staff = _has_role(*CAN_STAFF)
     return render_template('staff.html', staff=staff, can_staff=can_staff,
                            staff_by_id=staff_by_id,
-                           employment_status_values=EMPLOYMENT_STATUS_VALUES)
+                           employment_status_values=EMPLOYMENT_STATUS_VALUES,
+                           staff_doc_categories=STAFF_DOC_CATEGORIES)
 
 
 def _clean_property_list(raw: str) -> str:
@@ -4574,12 +4605,45 @@ def staff_edit(staff_id):
     return redirect(url_for('staff_list'))
 
 
+# Controlled categories for staff documents. New values may be added; the
+# UI chip list in templates/staff.html and the verifier's enum check must
+# be kept in sync.
+STAFF_DOC_CATEGORIES = ('Contract', 'ID', 'Visa', 'Passport',
+                        'Tax Form', 'Certificate', 'NDA', 'Other')
+
+
+def _validate_doc_category(raw: str) -> str:
+    s = (raw or '').strip()
+    return s if s else 'Other'
+
+
+def _purge_staff_documents(conn, staff_id: int) -> int:
+    """Delete every stored file + DB row for the given staff_id.
+    Best-effort on storage (failures don't roll back the DB delete — the
+    files become orphans, never the other way around). Returns the count
+    of rows removed."""
+    rows = conn.execute(
+        'SELECT id, stored_filename FROM staff_documents WHERE staff_id=?',
+        (staff_id,)
+    ).fetchall()
+    for r in rows:
+        try:
+            _storage.delete_file(r['stored_filename'])
+        except Exception as e:
+            print(f'[staff-doc] purge: could not delete {r["stored_filename"]}: {e}')
+    if rows:
+        conn.execute('DELETE FROM staff_documents WHERE staff_id=?', (staff_id,))
+    return len(rows)
+
+
 @app.route('/staff/delete/<int:staff_id>', methods=['POST'])
 @role_required(*CAN_STAFF)
 def staff_delete(staff_id):
     with get_db() as conn:
         row = conn.execute('SELECT name FROM staff WHERE id=?', (staff_id,)).fetchone()
         if row:
+            # Delete any uploaded documents (files + rows) first.
+            _purge_staff_documents(conn, staff_id)
             # Clear manager_id on any direct reports so we don't leave dangling
             # FK references after the row is removed.
             conn.execute('UPDATE staff SET manager_id=NULL WHERE manager_id=?',
@@ -4587,6 +4651,147 @@ def staff_delete(staff_id):
             conn.execute('DELETE FROM staff WHERE id=?', (staff_id,))
             conn.commit()
             flash(f'{row["name"]} removed from staff directory.', 'success')
+    return redirect(url_for('staff_list'))
+
+
+# ─── Staff documents (contracts / IDs / visas / certificates / …) ────────────
+
+@app.route('/staff/<int:staff_id>/documents', methods=['GET'])
+@role_required(*CAN_STAFF)
+def staff_documents_list(staff_id):
+    """JSON list of documents attached to a staff member. Used by the
+    Documents modal in templates/staff.html to refresh after uploads."""
+    with get_db() as conn:
+        person = conn.execute('SELECT name FROM staff WHERE id=?',
+                              (staff_id,)).fetchone()
+        if not person:
+            return jsonify({'ok': False, 'message': 'Staff not found.'}), 404
+        rows = conn.execute(
+            'SELECT id, category, original_name, content_type, size_bytes, '
+            'expiry_date, uploaded_by, uploaded_at FROM staff_documents '
+            'WHERE staff_id=? ORDER BY uploaded_at DESC',
+            (staff_id,)
+        ).fetchall()
+    return jsonify({
+        'ok': True,
+        'staff_id': staff_id,
+        'staff_name': person['name'],
+        'documents': [dict(r) for r in rows],
+    })
+
+
+@app.route('/staff/<int:staff_id>/documents', methods=['POST'])
+@role_required(*CAN_STAFF)
+def staff_documents_upload(staff_id):
+    with get_db() as conn:
+        person = conn.execute('SELECT name FROM staff WHERE id=?',
+                              (staff_id,)).fetchone()
+    if not person:
+        flash('Staff not found.', 'error')
+        return redirect(url_for('staff_list'))
+
+    file = request.files.get('document')
+    if not file or not file.filename:
+        flash('Please choose a file to upload.', 'error')
+        return redirect(url_for('staff_list'))
+    if not allowed_file(file.filename):
+        flash(f'File type not allowed. Use one of: {", ".join(sorted(ALLOWED_EXTENSIONS))}.',
+              'error')
+        return redirect(url_for('staff_list'))
+
+    raw = file.read()
+    if not raw:
+        flash('Uploaded file is empty.', 'error')
+        return redirect(url_for('staff_list'))
+
+    category    = _validate_doc_category(request.form.get('category', ''))
+    expiry_date = (request.form.get('expiry_date') or '').strip()  # ISO yyyy-mm-dd
+    safe        = secure_filename(file.filename) or 'document'
+    timestamp   = datetime.now().strftime('%Y%m%d_%H%M%S')
+    stored_name = f"staff-docs/{staff_id}/{timestamp}_{safe}"
+
+    try:
+        _storage.save_file(stored_name, raw,
+                           content_type=file.mimetype or 'application/octet-stream')
+    except Exception as e:
+        print(f'[staff-doc] upload failed: {e}')
+        flash('Could not store the file. Try again.', 'error')
+        return redirect(url_for('staff_list'))
+
+    with get_db() as conn:
+        conn.execute(
+            'INSERT INTO staff_documents (staff_id, category, original_name, '
+            'stored_filename, content_type, size_bytes, expiry_date, '
+            'uploaded_by) VALUES (?,?,?,?,?,?,?,?)',
+            (staff_id, category, file.filename, stored_name,
+             file.mimetype or '', len(raw), expiry_date or None,
+             session.get('username', 'system'))
+        )
+        conn.commit()
+    log_action('STAFF DOC UPLOAD', person['name'],
+               f'{category}: {file.filename} ({len(raw)} bytes)')
+    flash(f'Document "{file.filename}" uploaded.', 'success')
+    return redirect(url_for('staff_list'))
+
+
+@app.route('/staff/documents/<int:doc_id>/download')
+@role_required(*CAN_STAFF)
+def staff_documents_download(doc_id):
+    with get_db() as conn:
+        row = conn.execute(
+            'SELECT staff_id, original_name, stored_filename, content_type '
+            'FROM staff_documents WHERE id=?', (doc_id,)
+        ).fetchone()
+    if not row:
+        flash('Document not found.', 'error')
+        return redirect(url_for('staff_list'))
+
+    if _storage.backend() == 'supabase':
+        signed = _storage.file_url(row['stored_filename'], expires=3600)
+        if not signed:
+            flash('Document not found in storage.', 'error')
+            return redirect(url_for('staff_list'))
+        # Force download (never inline) — same rule as resume serving.
+        sep = '&' if '?' in signed else '?'
+        return redirect(f'{signed}{sep}download=1')
+
+    # Local backend: stream the bytes back with attachment disposition so the
+    # browser saves instead of rendering a (potentially hostile) HTML/SVG.
+    data = _storage.read_file(row['stored_filename'])
+    if data is None:
+        flash('Document not found in storage.', 'error')
+        return redirect(url_for('staff_list'))
+    from flask import Response
+    safe_name = secure_filename(row['original_name']) or 'document'
+    headers = {
+        'Content-Disposition': f'attachment; filename="{safe_name}"',
+        'X-Content-Type-Options': 'nosniff',
+    }
+    return Response(data,
+                    mimetype=row['content_type'] or 'application/octet-stream',
+                    headers=headers)
+
+
+@app.route('/staff/documents/<int:doc_id>/delete', methods=['POST'])
+@role_required(*CAN_STAFF)
+def staff_documents_delete(doc_id):
+    with get_db() as conn:
+        row = conn.execute(
+            'SELECT sd.id, sd.original_name, sd.stored_filename, s.name AS staff_name '
+            'FROM staff_documents sd JOIN staff s ON s.id = sd.staff_id '
+            'WHERE sd.id=?', (doc_id,)
+        ).fetchone()
+        if not row:
+            flash('Document not found.', 'error')
+            return redirect(url_for('staff_list'))
+        try:
+            _storage.delete_file(row['stored_filename'])
+        except Exception as e:
+            print(f'[staff-doc] delete: storage error: {e}')
+        conn.execute('DELETE FROM staff_documents WHERE id=?', (doc_id,))
+        conn.commit()
+    log_action('STAFF DOC DELETE', row['staff_name'], row['original_name'])
+    flash(f'Document "{row["original_name"]}" deleted.', 'success')
     return redirect(url_for('staff_list'))
 
 

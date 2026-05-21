@@ -272,6 +272,42 @@ def check_staff_columns(app_src: str) -> None:
                'staff_delete clears manager_id references')
 
 
+def check_staff_documents(app_src: str) -> None:
+    section('Staff documents — schema + routes + safety')
+    must_match(app_src, 'CREATE TABLE IF NOT EXISTS staff_documents',
+               'staff_documents table created in init_db')
+    must_match(app_src, 'STAFF_DOC_CATEGORIES',
+               'STAFF_DOC_CATEGORIES enum defined')
+    must_match(app_src,
+               "STAFF_DOC_CATEGORIES = ('Contract', 'ID', 'Visa', 'Passport',",
+               'staff doc category list unchanged (first four match)')
+    must_match(app_src, '_purge_staff_documents',
+               'Cascade-delete helper _purge_staff_documents present')
+    must_match(app_src, "_purge_staff_documents(conn, staff_id)",
+               'staff_delete invokes _purge_staff_documents')
+    # Routes must exist and be HR-gated
+    must_regex(app_src,
+               r"@app\.route\('/staff/<int:staff_id>/documents',\s*methods=\['GET'\]\)\s*\n@role_required\(\*CAN_STAFF\)",
+               '/staff/<id>/documents GET is @role_required(*CAN_STAFF)')
+    must_regex(app_src,
+               r"@app\.route\('/staff/<int:staff_id>/documents',\s*methods=\['POST'\]\)\s*\n@role_required\(\*CAN_STAFF\)",
+               '/staff/<id>/documents POST is @role_required(*CAN_STAFF)')
+    must_regex(app_src,
+               r"@app\.route\('/staff/documents/<int:doc_id>/download'\)\s*\n@role_required\(\*CAN_STAFF\)",
+               '/staff/documents/<id>/download is @role_required(*CAN_STAFF)')
+    must_regex(app_src,
+               r"@app\.route\('/staff/documents/<int:doc_id>/delete',\s*methods=\['POST'\]\)\s*\n@role_required\(\*CAN_STAFF\)",
+               '/staff/documents/<id>/delete is @role_required(*CAN_STAFF)')
+    # Download must enforce attachment disposition on both backends
+    must_match(app_src, "Content-Disposition': f'attachment;",
+               'Local document download uses Content-Disposition: attachment')
+    must_match(app_src, "f'{signed}{sep}download=1'",
+               'Supabase document download appends ?download=1')
+    # The stored filename must always be namespaced under the staff prefix
+    must_match(app_src, 'staff-docs/{staff_id}',
+               'Stored filename namespaced under staff-docs/<id>/')
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # §11  CSS — required design-token classes
 # ─────────────────────────────────────────────────────────────────────────────
@@ -434,6 +470,7 @@ def main() -> int:
         check_resume_download(app_src)
         check_permissions(app_src)
         check_staff_columns(app_src)
+        check_staff_documents(app_src)
     if css_src:
         check_css(css_src)
     check_templates()
