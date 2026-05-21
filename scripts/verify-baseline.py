@@ -329,6 +329,43 @@ def check_requirements(reqs_src: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# §13b  Lock-mechanism files are present (the lock guards itself)
+# ─────────────────────────────────────────────────────────────────────────────
+def check_lock_mechanism() -> None:
+    section('Lock-mechanism files (the lock guards itself)')
+    files = [
+        ROOT / 'scripts' / 'git-hooks' / 'pre-commit',
+        ROOT / 'scripts' / 'install-hooks.sh',
+        ROOT / 'scripts' / 'safe-deploy.sh',
+    ]
+    for f in files:
+        if f.exists():
+            ok(f'{f.relative_to(ROOT)} present')
+        else:
+            fail(f'{f.relative_to(ROOT)} missing — the lock is incomplete')
+    # The versioned pre-commit hook must invoke the verifier
+    hook = ROOT / 'scripts' / 'git-hooks' / 'pre-commit'
+    if hook.exists():
+        hook_src = hook.read_text(encoding='utf-8')
+        if 'verify-baseline.py' in hook_src:
+            ok('Versioned pre-commit hook calls verify-baseline.py')
+        else:
+            fail('Versioned pre-commit hook does NOT call verify-baseline.py')
+    # safe-deploy must call the verifier and respect FORCE=1
+    sd = ROOT / 'scripts' / 'safe-deploy.sh'
+    if sd.exists():
+        sd_src = sd.read_text(encoding='utf-8')
+        if 'verify-baseline.py' in sd_src:
+            ok('safe-deploy.sh runs verify-baseline.py')
+        else:
+            fail('safe-deploy.sh does NOT run verify-baseline.py')
+        if 'FORCE' in sd_src:
+            ok('safe-deploy.sh honors FORCE=1 bypass')
+        else:
+            fail('safe-deploy.sh missing FORCE=1 bypass mechanism')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # §14  CLAUDE.md is present and has expected sections
 # ─────────────────────────────────────────────────────────────────────────────
 def check_claude_md(md_src: str) -> None:
@@ -377,6 +414,7 @@ def main() -> int:
     if css_src:
         check_css(css_src)
     check_templates()
+    check_lock_mechanism()
     if reqs_src:
         check_requirements(reqs_src)
     if md_src:

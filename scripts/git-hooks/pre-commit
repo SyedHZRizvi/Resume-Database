@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────────────────
+#  Resume-Database — pre-commit hook
+#  Refuses the commit if scripts/verify-baseline.py reports any drift from
+#  the locked invariants documented in CLAUDE.md.
+#
+#  This file is the canonical, repo-versioned copy. Install it into
+#  .git/hooks/ by running:
+#      sh scripts/install-hooks.sh
+#
+#  Bypass (only for intentional baseline changes):
+#      git commit --no-verify
+#  In that case you MUST update CLAUDE.md AND scripts/verify-baseline.py
+#  in the same commit so the new rule replaces the old.
+# ─────────────────────────────────────────────────────────────────────────────
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+SCRIPT="$REPO_ROOT/scripts/verify-baseline.py"
+
+# If the verifier is missing, fail loudly — its absence is itself drift.
+if [ ! -f "$SCRIPT" ]; then
+    cat <<'EOF' >&2
+✗ pre-commit: scripts/verify-baseline.py is missing.
+  The baseline lock cannot be enforced without it. Either restore the
+  file, or if you're intentionally removing it, bypass with:
+      git commit --no-verify
+EOF
+    exit 1
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "⚠️  pre-commit: python3 not found on PATH — skipping baseline check." >&2
+    echo "    Install Python 3 to re-enable the lock." >&2
+    exit 0
+fi
+
+echo "▶ pre-commit: verifying baseline invariants…"
+if python3 "$SCRIPT"; then
+    exit 0
+fi
+
+cat <<'EOF' >&2
+
+✗ Commit refused — baseline invariants drifted.
+
+If the change is INTENTIONAL (you're updating the locked baseline):
+  1. Update CLAUDE.md to document the new/changed rule
+  2. Update scripts/verify-baseline.py to match
+  3. Re-run:  python3 scripts/verify-baseline.py
+  4. Once it passes, commit again
+
+Emergency bypass (work-in-progress only — do not push):
+  git commit --no-verify
+
+EOF
+exit 1

@@ -10,6 +10,26 @@ work must **blend in** with the existing patterns, not restructure them.
 > "as of today" baseline. Use `git diff stable-2026-05-20...HEAD` to see
 > everything that has changed since then.
 
+> **Lock enforcement:** the baseline is enforced by three things working
+> together — this file (rules), `scripts/verify-baseline.py` (machine check
+> of those rules), and `.git/hooks/pre-commit` (refuses commits that
+> violate the rules). One-time install of the hook after cloning:
+>
+> ```bash
+> sh scripts/install-hooks.sh
+> ```
+>
+> Deploy with the safe wrapper instead of `git push` directly:
+>
+> ```bash
+> sh scripts/safe-deploy.sh
+> ```
+>
+> Intentional baseline changes require updating **both** this file AND
+> `scripts/verify-baseline.py` in the same commit. Bypass paths:
+> `git commit --no-verify` (WIP only), `FORCE=1 sh scripts/safe-deploy.sh`
+> (deploy only after the baseline update).
+
 ---
 
 ## 1. What this app is
