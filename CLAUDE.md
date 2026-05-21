@@ -140,12 +140,18 @@ API like `/api/careers/apply`.
 
 ### 2.4 Staff directory schema
 
-The `staff` table currently has these columns (post-2026-05-20):
+The `staff` table now has these columns (post-2026-05-21):
 
 ```
 id, name, email, designation, department,
-company_property,   -- comma-separated text, rendered as tc-property-badge chips
-notes,              -- free text, visible only to CAN_STAFF
+company_property,         -- comma-separated text, rendered as tc-property-badge chips
+notes,                    -- free text, HR-only (CAN_STAFF)
+start_date,               -- ISO yyyy-mm-dd, joining date
+employment_status,        -- enum: 'Active' | 'On Leave' | 'Exited'  (default 'Active')
+manager_id,               -- INTEGER, FK to staff.id (self-reference); NULL allowed
+date_of_birth,            -- ISO yyyy-mm-dd, HR-only PII
+emergency_contact_name,   -- free text, HR-only PII
+emergency_contact_phone,  -- free text, HR-only PII
 created_at
 ```
 
@@ -157,8 +163,29 @@ additions are also supported. Do not remove the chip UI; if you add a new
 common item, add it as another chip in **both** the add form and the edit
 modal so they stay in sync.
 
-`notes` is sensitive HR context (offboarding etc.). Only render it when
-`can_staff` is truthy.
+**Sensitive / PII fields** — `notes`, `date_of_birth`,
+`emergency_contact_name`, `emergency_contact_phone` — are rendered only
+when `can_staff` is truthy. The `start_date`, `employment_status` and
+`manager_id` columns are NOT sensitive and may be shown to anyone with
+`CAN_VIEW` access.
+
+**Employment status** is a controlled enum. The list lives in two places
+that must stay in sync:
+  • `EMPLOYMENT_STATUS_VALUES = ('Active', 'On Leave', 'Exited')` in app.py
+  • The `<select>` in the Add Staff form **and** the Edit modal in
+    templates/staff.html (rendered from `employment_status_values` passed
+    via the staff_list route context).
+The colored status badges in the directory table use the CSS classes
+`.tc-status-active`, `.tc-status-on-leave`, `.tc-status-exited` (in
+static/css/style.css). Adding a new status requires updating the enum,
+the form select, AND a new `.tc-status-<slug>` CSS rule.
+
+**Manager (self-reference)** — `manager_id` may not equal the row's own
+`id`. The backend route `_validate_manager_id()` enforces this; the
+frontend `openEdit()` hides the self-option from the dropdown so HR can't
+even select it. When a staff row is deleted, any other row that listed
+that person as `manager_id` is automatically NULLed out by `staff_delete`
+to prevent dangling references.
 
 ---
 

@@ -525,9 +525,20 @@ def init_db():
         # notes:            free-text HR note about the employee or about
         #                   property return status. Sensitive — only visible
         #                   to Super Admin / HR Manager.
+        # start_date:        joining date (ISO yyyy-mm-dd).
+        # employment_status: 'Active' | 'On Leave' | 'Exited'.
+        # manager_id:        FK to another staff.id — reporting manager.
+        # date_of_birth:     ISO yyyy-mm-dd. Sensitive — HR only.
+        # emergency_contact_name / _phone: next-of-kin. Sensitive — HR only.
         for col, definition in [
-            ('company_property', 'TEXT'),
-            ('notes',            'TEXT'),
+            ('company_property',         'TEXT'),
+            ('notes',                    'TEXT'),
+            ('start_date',               'TEXT'),
+            ('employment_status',        "TEXT DEFAULT 'Active'"),
+            ('manager_id',               'INTEGER'),
+            ('date_of_birth',            'TEXT'),
+            ('emergency_contact_name',   'TEXT'),
+            ('emergency_contact_phone',  'TEXT'),
         ]:
             try:
                 conn.execute(f'ALTER TABLE staff ADD COLUMN {col} {definition}')
@@ -4438,6 +4449,29 @@ def open_config():
 
 # ─── Staff Directory ───────────────────────────────────────────────────────────
 
+# Controlled enum for employment_status. New values must be added here AND in
+# the chip-button list inside templates/staff.html so they stay in sync.
+EMPLOYMENT_STATUS_VALUES = ('Active', 'On Leave', 'Exited')
+
+
+def _validate_status(raw: str) -> str:
+    s = (raw or '').strip()
+    return s if s in EMPLOYMENT_STATUS_VALUES else 'Active'
+
+
+def _validate_manager_id(raw: str, self_id: int | None = None) -> int | None:
+    """Return a valid manager_id (int) or None. Forbids self-reference."""
+    try:
+        v = int((raw or '').strip())
+    except (TypeError, ValueError):
+        return None
+    if v <= 0:
+        return None
+    if self_id is not None and v == self_id:
+        return None
+    return v
+
+
 @app.route('/staff')
 @role_required(*CAN_VIEW)
 def staff_list():
@@ -4445,8 +4479,12 @@ def staff_list():
         staff = conn.execute(
             'SELECT * FROM staff ORDER BY name COLLATE NOCASE ASC'
         ).fetchall()
+    # Build id→name map so the table and the manager dropdown can show names.
+    staff_by_id = {row['id']: row['name'] for row in staff}
     can_staff = _has_role(*CAN_STAFF)
-    return render_template('staff.html', staff=staff, can_staff=can_staff)
+    return render_template('staff.html', staff=staff, can_staff=can_staff,
+                           staff_by_id=staff_by_id,
+                           employment_status_values=EMPLOYMENT_STATUS_VALUES)
 
 
 def _clean_property_list(raw: str) -> str:
@@ -4470,20 +4508,31 @@ def _clean_property_list(raw: str) -> str:
 @app.route('/staff/add', methods=['POST'])
 @role_required(*CAN_STAFF)
 def staff_add():
-    name             = request.form.get('name', '').strip()
-    email            = request.form.get('email', '').strip()
-    designation      = request.form.get('designation', '').strip()
-    department       = request.form.get('department', '').strip()
-    company_property = _clean_property_list(request.form.get('company_property', ''))
-    notes            = request.form.get('notes', '').strip()
+    f = request.form
+    name             = f.get('name', '').strip()
+    email            = f.get('email', '').strip()
+    designation      = f.get('designation', '').strip()
+    department       = f.get('department', '').strip()
+    company_property = _clean_property_list(f.get('company_property', ''))
+    notes            = f.get('notes', '').strip()
+    start_date       = f.get('start_date', '').strip()
+    employment_status      = _validate_status(f.get('employment_status', ''))
+    manager_id             = _validate_manager_id(f.get('manager_id', ''))
+    date_of_birth          = f.get('date_of_birth', '').strip()
+    emergency_contact_name = f.get('emergency_contact_name', '').strip()
+    emergency_contact_phone= f.get('emergency_contact_phone', '').strip()
     if not name:
         flash('Name is required.', 'error')
         return redirect(url_for('staff_list'))
     with get_db() as conn:
         conn.execute(
             'INSERT INTO staff (name, email, designation, department, '
-            'company_property, notes) VALUES (?,?,?,?,?,?)',
-            (name, email, designation, department, company_property, notes)
+            'company_property, notes, start_date, employment_status, '
+            'manager_id, date_of_birth, emergency_contact_name, '
+            'emergency_contact_phone) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+            (name, email, designation, department, company_property, notes,
+             start_date, employment_status, manager_id, date_of_birth,
+             emergency_contact_name, emergency_contact_phone)
         )
         conn.commit()
     flash(f'{name} added to staff directory.', 'success')
@@ -4493,21 +4542,32 @@ def staff_add():
 @app.route('/staff/edit/<int:staff_id>', methods=['POST'])
 @role_required(*CAN_STAFF)
 def staff_edit(staff_id):
-    name             = request.form.get('name', '').strip()
-    email            = request.form.get('email', '').strip()
-    designation      = request.form.get('designation', '').strip()
-    department       = request.form.get('department', '').strip()
-    company_property = _clean_property_list(request.form.get('company_property', ''))
-    notes            = request.form.get('notes', '').strip()
+    f = request.form
+    name             = f.get('name', '').strip()
+    email            = f.get('email', '').strip()
+    designation      = f.get('designation', '').strip()
+    department       = f.get('department', '').strip()
+    company_property = _clean_property_list(f.get('company_property', ''))
+    notes            = f.get('notes', '').strip()
+    start_date       = f.get('start_date', '').strip()
+    employment_status      = _validate_status(f.get('employment_status', ''))
+    manager_id             = _validate_manager_id(f.get('manager_id', ''),
+                                                  self_id=staff_id)
+    date_of_birth          = f.get('date_of_birth', '').strip()
+    emergency_contact_name = f.get('emergency_contact_name', '').strip()
+    emergency_contact_phone= f.get('emergency_contact_phone', '').strip()
     if not name:
         flash('Name is required.', 'error')
         return redirect(url_for('staff_list'))
     with get_db() as conn:
         conn.execute(
             'UPDATE staff SET name=?, email=?, designation=?, department=?, '
-            'company_property=?, notes=? WHERE id=?',
-            (name, email, designation, department,
-             company_property, notes, staff_id)
+            'company_property=?, notes=?, start_date=?, employment_status=?, '
+            'manager_id=?, date_of_birth=?, emergency_contact_name=?, '
+            'emergency_contact_phone=? WHERE id=?',
+            (name, email, designation, department, company_property, notes,
+             start_date, employment_status, manager_id, date_of_birth,
+             emergency_contact_name, emergency_contact_phone, staff_id)
         )
         conn.commit()
     flash(f'{name} updated successfully.', 'success')
@@ -4520,6 +4580,10 @@ def staff_delete(staff_id):
     with get_db() as conn:
         row = conn.execute('SELECT name FROM staff WHERE id=?', (staff_id,)).fetchone()
         if row:
+            # Clear manager_id on any direct reports so we don't leave dangling
+            # FK references after the row is removed.
+            conn.execute('UPDATE staff SET manager_id=NULL WHERE manager_id=?',
+                         (staff_id,))
             conn.execute('DELETE FROM staff WHERE id=?', (staff_id,))
             conn.commit()
             flash(f'{row["name"]} removed from staff directory.', 'success')

@@ -103,6 +103,67 @@
                 <input type="text" name="department" class="form-control form-control-sm"
                        placeholder="e.g. Engineering" />
               </div>
+              <!-- ── Employment section ─────────────────────────────────── -->
+              <div class="col-12">
+                <hr class="my-2">
+                <div class="text-muted small fw-semibold mb-1">
+                  <i class="bi bi-briefcase me-1"></i>Employment
+                </div>
+              </div>
+              <div class="col-12 col-md-3">
+                <label class="form-label fw-semibold small">Status</label>
+                <select name="employment_status" class="form-select form-select-sm">
+                  {% for s in employment_status_values %}
+                    <option value="{{ s }}" {% if s == 'Active' %}selected{% endif %}>{{ s }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="col-12 col-md-3">
+                <label class="form-label fw-semibold small">Start Date</label>
+                <input type="date" name="start_date" class="form-control form-control-sm" />
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label fw-semibold small">Reporting Manager</label>
+                <select name="manager_id" class="form-select form-select-sm">
+                  <option value="">— None —</option>
+                  {% for m in staff %}
+                    <option value="{{ m.id }}">{{ m.name }}{% if m.designation %} ({{ m.designation }}){% endif %}</option>
+                  {% endfor %}
+                </select>
+              </div>
+
+              <!-- ── Personal / emergency contact (HR-only PII) ───────────── -->
+              <div class="col-12">
+                <hr class="my-2">
+                <div class="text-muted small fw-semibold mb-1">
+                  <i class="bi bi-shield-lock me-1"></i>Personal &amp; Emergency Contact
+                  <span class="text-muted fw-normal">(HR only)</span>
+                </div>
+              </div>
+              <div class="col-12 col-md-3">
+                <label class="form-label fw-semibold small">Date of Birth</label>
+                <input type="date" name="date_of_birth" class="form-control form-control-sm" />
+              </div>
+              <div class="col-12 col-md-5">
+                <label class="form-label fw-semibold small">Emergency Contact Name</label>
+                <input type="text" name="emergency_contact_name"
+                       class="form-control form-control-sm"
+                       placeholder="e.g. Spouse / Parent name" />
+              </div>
+              <div class="col-12 col-md-4">
+                <label class="form-label fw-semibold small">Emergency Contact Phone</label>
+                <input type="tel" name="emergency_contact_phone"
+                       class="form-control form-control-sm"
+                       placeholder="e.g. +1 555 123 4567" />
+              </div>
+
+              <!-- ── Company property + HR notes ──────────────────────────── -->
+              <div class="col-12">
+                <hr class="my-2">
+                <div class="text-muted small fw-semibold mb-1">
+                  <i class="bi bi-box-seam me-1"></i>Property &amp; Notes
+                </div>
+              </div>
               <div class="col-12 col-md-7">
                 <label class="form-label fw-semibold small">
                   <i class="bi bi-box-seam text-warning me-1"></i>Company Property Issued
@@ -154,9 +215,11 @@
             <thead class="table-light">
               <tr>
                 <th class="ps-4 text-muted fw-semibold">Name</th>
+                <th class="text-muted fw-semibold">Status</th>
                 <th class="text-muted fw-semibold">Email</th>
                 <th class="text-muted fw-semibold">Designation</th>
                 <th class="text-muted fw-semibold">Department</th>
+                <th class="text-muted fw-semibold">Manager</th>
                 <th class="text-muted fw-semibold">Company Property</th>
                 {% if can_staff %}
                 <th class="text-muted fw-semibold">HR Notes</th>
@@ -166,9 +229,16 @@
             </thead>
             <tbody>
               {% for s in staff %}
+              {% set status = s.employment_status or 'Active' %}
               <tr>
                 <td class="ps-4 fw-semibold">
                   <i class="bi bi-person-circle text-primary me-2"></i>{{ s.name }}
+                </td>
+                <td>
+                  <span class="tc-status-badge tc-status-{{ status|lower|replace(' ', '-') }}">
+                    <i class="bi bi-{% if status == 'Active' %}check-circle-fill{% elif status == 'On Leave' %}pause-circle-fill{% else %}box-arrow-right{% endif %}"></i>
+                    {{ status }}
+                  </span>
                 </td>
                 <td class="text-muted">
                   {% if s.email %}
@@ -177,6 +247,11 @@
                 </td>
                 <td class="text-muted">{{ s.designation or '—' }}</td>
                 <td class="text-muted">{{ s.department or '—' }}</td>
+                <td class="text-muted">
+                  {% if s.manager_id and staff_by_id.get(s.manager_id) %}
+                    <i class="bi bi-person-fill-up text-muted me-1"></i>{{ staff_by_id[s.manager_id] }}
+                  {% else %}—{% endif %}
+                </td>
                 <td>
                   {% if s.company_property %}
                     <div class="d-flex flex-wrap gap-1">
@@ -204,7 +279,19 @@
                   <div class="d-flex gap-1 justify-content-center">
                     <!-- Edit button -->
                     <button type="button" class="btn btn-sm btn-outline-primary" title="Edit"
-                            onclick='openEdit({{ s.id }}, {{ s.name|tojson }}, {{ (s.email or "")|tojson }}, {{ (s.designation or "")|tojson }}, {{ (s.department or "")|tojson }}, {{ (s.company_property or "")|tojson }}, {{ (s.notes or "")|tojson }})'>
+                            onclick='openEdit({{ s.id }},
+                              {{ s.name|tojson }},
+                              {{ (s.email or "")|tojson }},
+                              {{ (s.designation or "")|tojson }},
+                              {{ (s.department or "")|tojson }},
+                              {{ (s.company_property or "")|tojson }},
+                              {{ (s.notes or "")|tojson }},
+                              {{ (s.start_date or "")|tojson }},
+                              {{ (s.employment_status or "Active")|tojson }},
+                              {{ (s.manager_id or "")|tojson }},
+                              {{ (s.date_of_birth or "")|tojson }},
+                              {{ (s.emergency_contact_name or "")|tojson }},
+                              {{ (s.emergency_contact_phone or "")|tojson }})'>
                       <i class="bi bi-pencil-fill"></i>
                     </button>
                     <!-- Delete button -->
@@ -272,6 +359,65 @@
               <input type="text" name="department" id="editDepartment" class="form-control"
                      placeholder="e.g. Engineering, HR" />
             </div>
+
+            <!-- ── Employment section ──────────────────────────────────── -->
+            <div class="col-12">
+              <hr class="my-1">
+              <div class="text-muted small fw-semibold">
+                <i class="bi bi-briefcase me-1"></i>Employment
+              </div>
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label fw-semibold small">Status</label>
+              <select name="employment_status" id="editEmploymentStatus" class="form-select">
+                {% for s in employment_status_values %}
+                  <option value="{{ s }}">{{ s }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label fw-semibold small">Start Date</label>
+              <input type="date" name="start_date" id="editStartDate" class="form-control" />
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label fw-semibold small">Reporting Manager</label>
+              <select name="manager_id" id="editManagerId" class="form-select">
+                <option value="">— None —</option>
+                {% for m in staff %}
+                  <option value="{{ m.id }}" data-self-id="{{ m.id }}">{{ m.name }}{% if m.designation %} ({{ m.designation }}){% endif %}</option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <!-- ── Personal / emergency contact (HR-only PII) ──────────── -->
+            <div class="col-12">
+              <hr class="my-1">
+              <div class="text-muted small fw-semibold">
+                <i class="bi bi-shield-lock me-1"></i>Personal &amp; Emergency Contact
+                <span class="text-muted fw-normal">(HR only)</span>
+              </div>
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label fw-semibold small">Date of Birth</label>
+              <input type="date" name="date_of_birth" id="editDateOfBirth" class="form-control" />
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label fw-semibold small">Emergency Contact Name</label>
+              <input type="text" name="emergency_contact_name" id="editEmergencyName"
+                     class="form-control" placeholder="e.g. Spouse / Parent name" />
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label fw-semibold small">Emergency Contact Phone</label>
+              <input type="tel" name="emergency_contact_phone" id="editEmergencyPhone"
+                     class="form-control" placeholder="e.g. +1 555 123 4567" />
+            </div>
+
+            <div class="col-12">
+              <hr class="my-1">
+              <div class="text-muted small fw-semibold">
+                <i class="bi bi-box-seam me-1"></i>Property &amp; Notes
+              </div>
+            </div>
             <div class="col-12">
               <label class="form-label fw-semibold small">
                 <i class="bi bi-box-seam text-warning me-1"></i>Company Property Issued
@@ -315,14 +461,35 @@
 </div>
 
 <script>
-function openEdit(id, name, email, designation, department, companyProperty, notes) {
-  document.getElementById('editName').value           = name;
-  document.getElementById('editEmail').value          = email;
-  document.getElementById('editDesignation').value    = designation;
-  document.getElementById('editDepartment').value     = department;
-  document.getElementById('editPropertyInput').value  = companyProperty || '';
-  document.getElementById('editNotes').value          = notes || '';
-  document.getElementById('editForm').action          = '/staff/edit/' + id;
+function openEdit(id, name, email, designation, department, companyProperty, notes,
+                  startDate, employmentStatus, managerId, dateOfBirth,
+                  emergencyContactName, emergencyContactPhone) {
+  document.getElementById('editName').value             = name;
+  document.getElementById('editEmail').value            = email;
+  document.getElementById('editDesignation').value      = designation;
+  document.getElementById('editDepartment').value       = department;
+  document.getElementById('editPropertyInput').value    = companyProperty || '';
+  document.getElementById('editNotes').value            = notes || '';
+  document.getElementById('editStartDate').value        = startDate || '';
+  document.getElementById('editEmploymentStatus').value = employmentStatus || 'Active';
+  document.getElementById('editDateOfBirth').value      = dateOfBirth || '';
+  document.getElementById('editEmergencyName').value    = emergencyContactName || '';
+  document.getElementById('editEmergencyPhone').value   = emergencyContactPhone || '';
+  // Manager dropdown: hide the option that points back at this same person
+  // so HR can't accidentally make someone their own manager.
+  var mgrSel = document.getElementById('editManagerId');
+  Array.from(mgrSel.options).forEach(function(opt){
+    if (opt.value && parseInt(opt.value, 10) === id) {
+      opt.disabled = true;
+      opt.hidden   = true;
+    } else {
+      opt.disabled = false;
+      opt.hidden   = false;
+    }
+  });
+  mgrSel.value = (managerId !== '' && managerId !== null && managerId !== undefined)
+                 ? String(managerId) : '';
+  document.getElementById('editForm').action            = '/staff/edit/' + id;
   // Refresh chip highlight state to match the input value
   syncChipState(document.getElementById('editPropertyInput'));
   new bootstrap.Modal(document.getElementById('editModal')).show();

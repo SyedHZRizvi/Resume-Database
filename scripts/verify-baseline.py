@@ -246,10 +246,30 @@ def check_staff_columns(app_src: str) -> None:
     section('Staff directory schema additions')
     must_match(app_src, "'company_property'",
                'company_property column migration in init_db')
-    must_match(app_src, "'notes',            'TEXT'",
+    must_match(app_src, "'notes',                    'TEXT'",
                'notes column migration in init_db')
     must_match(app_src, '_clean_property_list',
                'Property normaliser _clean_property_list() defined')
+    # Employee-data columns (added 2026-05-21)
+    for col in ('start_date', 'employment_status', 'manager_id',
+                'date_of_birth', 'emergency_contact_name',
+                'emergency_contact_phone'):
+        must_match(app_src, f"'{col}'",
+                   f'{col} column migration in init_db')
+    must_match(app_src, 'EMPLOYMENT_STATUS_VALUES',
+               'Employment status enum constant defined')
+    must_match(app_src,
+               "EMPLOYMENT_STATUS_VALUES = ('Active', 'On Leave', 'Exited')",
+               'Employment status enum values unchanged (Active/On Leave/Exited)')
+    must_match(app_src, '_validate_status',
+               'Status validator _validate_status() present')
+    must_match(app_src, '_validate_manager_id',
+               'Manager-id validator _validate_manager_id() present')
+    must_match(app_src, "self_id=staff_id",
+               'staff_edit forbids self-as-manager (passes self_id)')
+    must_match(app_src,
+               "UPDATE staff SET manager_id=NULL WHERE manager_id=?",
+               'staff_delete clears manager_id references')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -259,7 +279,10 @@ def check_css(css_src: str) -> None:
     section('CSS design tokens')
     for cls in ('.tc-nav-icon', '.tc-tooltip', '.tc-chip',
                 '.tc-property-badge', '.tc-property-chips',
-                '.tc-notes-cell'):
+                '.tc-notes-cell',
+                # Employment-status badge classes (added 2026-05-21)
+                '.tc-status-badge', '.tc-status-active',
+                '.tc-status-on-leave', '.tc-status-exited'):
         must_match(css_src, cls, f'{cls} class defined')
 
 
