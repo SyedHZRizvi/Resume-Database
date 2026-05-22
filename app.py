@@ -7995,6 +7995,83 @@ def _auto_reanalyze_on_startup():
         print(f"   [Auto-Update] Warning: background re-analysis encountered an error: {e}")
 
 
+def _extract_name_from_resume_text(text: str) -> str:
+    """Heuristic: find the candidate's name in the first ~20 lines of the
+    parsed resume text. We scan top-down for the first line that passes
+    `_looks_like_real_name()`, after stripping common prefixes like
+    "Name:" / "CV of" / "Resume of". Returns '' if nothing plausible found.
+
+    This is the fallback when the AI parser misreads a section heading
+    (e.g. "Client Relationship Management") as the candidate's name.
+    """
+    if not text:
+        return ''
+    lines = text.splitlines()
+    prefixes = ('name:', 'full name:', 'candidate:', 'cv of', 'resume of',
+                'curriculum vitae of')
+    for raw in lines[:25]:
+        line = raw.strip()
+        if not line:
+            continue
+        low = line.lower()
+        for p in prefixes:
+            if low.startswith(p):
+                line = line[len(p):].strip(': ')
+                break
+        # Strip dash / bullet decorations resume builders add
+        line = line.lstrip('-*•·–— ').strip()
+        if _looks_like_real_name(line):
+            return line
+    return ''
+
+
+def _cleanup_misparsed_applicant_names():
+    """One-shot cleanup that finds applicants whose stored name is
+    obviously NOT a person's name (matches our `_NOT_A_NAME_TOKENS`
+    blacklist via `_looks_like_real_name`) and tries to repair them:
+
+      1. If `parsed_text` is available, extract a name heuristically
+         from the top of the resume. Use it if it looks real.
+      2. Otherwise, replace with 'Please Edit Name' so HR sees a clear
+         "needs review" cue when the page loads.
+
+    Idempotent: rows whose stored name already passes the validator are
+    left alone, so this loop is a no-op on every subsequent restart.
+    """
+    try:
+        with get_db() as conn:
+            rows = conn.execute(
+                'SELECT id, name, parsed_text FROM applicants '
+                "WHERE name IS NOT NULL AND name != ''"
+            ).fetchall()
+        rescued = 0
+        flagged = 0
+        for r in rows:
+            current = (r['name'] or '').strip()
+            if not current:
+                continue
+            if _looks_like_real_name(current):
+                continue   # name is already plausible; leave it alone
+            # Try heuristic rescue from the parsed resume text
+            candidate = _extract_name_from_resume_text(r['parsed_text'] or '')
+            replacement = candidate if candidate else 'Please Edit Name'
+            with get_db() as conn:
+                conn.execute('UPDATE applicants SET name=? WHERE id=?',
+                             (replacement, r['id']))
+                conn.commit()
+            if candidate:
+                rescued += 1
+                print(f"   [Name-Rescue] applicant #{r['id']}: "
+                      f"{current!r} → {candidate!r}")
+            else:
+                flagged += 1
+        if rescued or flagged:
+            print(f"   [Name-Rescue] rescued {rescued}, flagged "
+                  f"{flagged} for manual review.")
+    except Exception as e:
+        print(f"   [Name-Rescue] warning: {e}")
+
+
 def _backfill_file_hashes():
     """Compute and store SHA-256 hashes for any resume records that pre-date
     the duplicate-detection feature (file_hash IS NULL but file exists on disk).
@@ -8077,6 +8154,10 @@ def _run_startup_tasks():
             _auto_reanalyze_on_startup()
         except Exception as e:
             print(f'[startup] re-analyze failed: {e}')
+        try:
+            _cleanup_misparsed_applicant_names()
+        except Exception as e:
+            print(f'[startup] name-rescue failed: {e}')
         try:
             _backfill_file_hashes()
         except Exception as e:

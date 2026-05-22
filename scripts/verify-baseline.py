@@ -245,6 +245,13 @@ def check_name_preservation(app_src: str) -> None:
     must_not_match(app_src,
                    'not _looks_like_name(existing_name)',
                    'Auto-reanalyze does NOT call _looks_like_name on existing_name')
+    # Auto-cleanup of names that obviously aren't names (CLAUDE.md §2.2 #12)
+    must_match(app_src, '_cleanup_misparsed_applicant_names',
+               'Name-rescue cleanup function defined')
+    must_match(app_src, '_extract_name_from_resume_text',
+               'Heuristic name extractor defined')
+    must_match(app_src, '_cleanup_misparsed_applicant_names()',
+               'Name-rescue cleanup is called from startup tasks')
 
 
 # ─────────────────────────────────────────────────────────────────────────────

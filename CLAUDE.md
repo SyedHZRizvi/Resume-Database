@@ -129,6 +129,15 @@ When adding a new button to the navbar:
     `_looks_like_name()` and replaced any single-word name like "Saha"
     or "Madonna" with a section heading like "Client Relationship
     Management" extracted by Claude. The human edit wins — full stop.
+12. **Misparsed applicant names auto-repair on startup** — alongside
+    the auto-reanalyze, `_cleanup_misparsed_applicant_names()` runs as
+    a one-shot startup task. It detects stored names that fail
+    `_looks_like_real_name()` (the strict job-title / section-heading
+    blacklist) and either rescues them by re-extracting from
+    `parsed_text` via `_extract_name_from_resume_text()`, or flags
+    them as `'Please Edit Name'` if no plausible alternative is found.
+    Idempotent: a row whose name already passes the validator is
+    never touched.
 
 ### 2.3 Role / permission model
 
