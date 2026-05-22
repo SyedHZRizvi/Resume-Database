@@ -219,6 +219,19 @@ even select it. When a staff row is deleted, any other row that listed
 that person as `manager_id` is automatically NULLed out by `staff_delete`
 to prevent dangling references.
 
+**Bulk-assign property / notes** — the staff directory has a "Bulk
+Assign Property / Notes" card (POST `/staff/bulk-assign`, CAN_STAFF) for
+issuing the same property or note to many staff at once. Modes:
+  • `mode_property`: `append` (default — merges into existing
+    company_property via `_clean_property_list`) or `replace`
+  • `mode_note`: `append` (default — prepends a `[YYYY-MM-DD HH:MM
+    by author]` header to the new note text and concatenates onto
+    existing) or `replace`
+  • `apply_to`: `all` (every staff whose `employment_status != 'Exited'`)
+    or `selected` (a list of `staff_ids[]` checkbox values)
+The submit is gated client-side by a confirm dialog showing the count.
+A single audit-log row is written summarising the bulk operation.
+
 ### 2.5 Staff documents (contracts / IDs / visas)
 
 A separate `staff_documents` table holds HR file uploads per staff

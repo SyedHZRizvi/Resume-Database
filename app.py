@@ -5318,6 +5318,106 @@ def staff_delete(staff_id):
     return redirect(url_for('staff_list'))
 
 
+# ─── Bulk-assign property / notes to multiple staff ──────────────────────────
+# Triggered by the "Bulk Assign Property / Notes" card on the staff
+# directory page. Used when HR is onboarding a batch of new hires that all
+# get the same starter kit, or rolling out a policy note to everyone.
+# Idempotent: appends to existing values by default (with a Replace option).
+
+@app.route('/staff/bulk-assign', methods=['POST'])
+@role_required(*CAN_STAFF)
+def staff_bulk_assign():
+    f = request.form
+    apply_to        = (f.get('apply_to') or 'selected').strip()
+    add_property    = _clean_property_list(f.get('add_property', ''))
+    append_note     = (f.get('append_note') or '').strip()
+    mode_property   = (f.get('mode_property') or 'append').strip()
+    mode_note       = (f.get('mode_note') or 'append').strip()
+    if mode_property not in ('append', 'replace'): mode_property = 'append'
+    if mode_note     not in ('append', 'replace'): mode_note     = 'append'
+
+    if not add_property and not append_note:
+        flash('Nothing to assign — pick at least one property item or write a note.', 'error')
+        return redirect(url_for('staff_list'))
+
+    # Resolve target staff list
+    with get_db() as conn:
+        if apply_to == 'all':
+            rows = conn.execute(
+                "SELECT id, name, company_property, notes FROM staff "
+                "WHERE COALESCE(employment_status, 'Active') != 'Exited' "
+                "ORDER BY name COLLATE NOCASE ASC"
+            ).fetchall()
+        else:
+            raw_ids = f.getlist('staff_ids')
+            ids = []
+            for sid in raw_ids:
+                try:
+                    ids.append(int(sid))
+                except (TypeError, ValueError):
+                    pass
+            if not ids:
+                flash('No staff selected. Tick the checkboxes of the staff to update.', 'error')
+                return redirect(url_for('staff_list'))
+            placeholders = ','.join('?' * len(ids))
+            rows = conn.execute(
+                f"SELECT id, name, company_property, notes FROM staff "
+                f"WHERE id IN ({placeholders}) ORDER BY name COLLATE NOCASE ASC",
+                ids
+            ).fetchall()
+
+    if not rows:
+        flash('No matching staff found.', 'warning')
+        return redirect(url_for('staff_list'))
+
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
+    author    = session.get('username', 'system') if REQUIRE_LOGIN else 'system'
+    note_block = f'[{timestamp} by {author}]\n{append_note}' if append_note else ''
+
+    updated = 0
+    with get_db() as conn:
+        for s in rows:
+            new_property = s['company_property'] or ''
+            new_notes    = s['notes'] or ''
+            row_changed  = False
+
+            if add_property:
+                if mode_property == 'replace':
+                    new_property = add_property
+                else:
+                    combined     = (new_property + ', ' + add_property).strip(', ')
+                    new_property = _clean_property_list(combined)
+                row_changed = True
+
+            if note_block:
+                if mode_note == 'replace':
+                    new_notes = note_block
+                else:
+                    new_notes = (new_notes.rstrip() + '\n\n' + note_block).lstrip()
+                row_changed = True
+
+            if row_changed:
+                conn.execute(
+                    'UPDATE staff SET company_property=?, notes=? WHERE id=?',
+                    (new_property, new_notes, s['id'])
+                )
+                updated += 1
+        conn.commit()
+
+    log_action('STAFF BULK ASSIGN',
+               f'{updated} staff',
+               f'property={add_property!r}; note_len={len(append_note)}; '
+               f'apply_to={apply_to}; mode_property={mode_property}; '
+               f'mode_note={mode_note}')
+    flash(
+        f'Updated {updated} staff member' + ('s' if updated != 1 else '') + '. '
+        + (f'Property: "{add_property}". ' if add_property else '')
+        + (f'Note added.' if append_note else ''),
+        'success'
+    )
+    return redirect(url_for('staff_list'))
+
+
 # ─── Staff documents (contracts / IDs / visas / certificates / …) ────────────
 
 @app.route('/staff/<int:staff_id>/documents', methods=['GET'])

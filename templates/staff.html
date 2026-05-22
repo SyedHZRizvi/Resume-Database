@@ -199,6 +199,131 @@
         </div>
       </div>
     </div>
+
+    <!-- ── Bulk Assign Property / Notes ─────────────────────────────────────── -->
+    <div class="col-12">
+      <div class="card border-0 shadow-sm">
+        <div class="card-header bg-white border-bottom py-3 px-4">
+          <h6 class="fw-semibold mb-0">
+            <i class="bi bi-people-fill text-info me-2"></i>Bulk Assign Property / Notes
+            <span class="text-muted fw-normal small">
+              — issue the same items to many staff at once
+            </span>
+          </h6>
+        </div>
+        <div class="card-body px-4 py-3">
+          <form method="POST" action="{{ url_for('staff_bulk_assign') }}" id="bulkAssignForm">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+            <!-- Property -->
+            <div class="mb-3">
+              <label class="form-label fw-semibold small">
+                <i class="bi bi-box-seam text-warning me-1"></i>Property to Issue
+              </label>
+              <input type="text" name="add_property" id="bulkPropertyInput"
+                     class="form-control form-control-sm tc-property-input"
+                     placeholder="Comma-separated, e.g. Access Card, Laptop, Phone" />
+              <div class="tc-property-chips mt-2" data-target="bulkPropertyInput">
+                <button type="button" class="tc-chip" data-item="Access Card"><i class="bi bi-credit-card-2-front"></i> Access Card</button>
+                <button type="button" class="tc-chip" data-item="Laptop"><i class="bi bi-laptop"></i> Laptop</button>
+                <button type="button" class="tc-chip" data-item="Mouse"><i class="bi bi-mouse2"></i> Mouse</button>
+                <button type="button" class="tc-chip" data-item="Keyboard"><i class="bi bi-keyboard"></i> Keyboard</button>
+                <button type="button" class="tc-chip" data-item="Phone"><i class="bi bi-phone"></i> Phone</button>
+                <button type="button" class="tc-chip" data-item="Headset"><i class="bi bi-headset"></i> Headset</button>
+                <button type="button" class="tc-chip" data-item="Monitor"><i class="bi bi-display"></i> Monitor</button>
+                <button type="button" class="tc-chip" data-item="Charger"><i class="bi bi-plug"></i> Charger</button>
+              </div>
+              <div class="mt-2 small">
+                <div class="form-check form-check-inline">
+                  <input type="radio" class="form-check-input" name="mode_property" value="append" id="bulkPropAppend" checked>
+                  <label class="form-check-label" for="bulkPropAppend">Add to existing</label>
+                </div>
+                <div class="form-check form-check-inline">
+                  <input type="radio" class="form-check-input" name="mode_property" value="replace" id="bulkPropReplace">
+                  <label class="form-check-label" for="bulkPropReplace">Replace existing</label>
+                </div>
+              </div>
+            </div>
+
+            <!-- HR Note -->
+            <div class="mb-3">
+              <label class="form-label fw-semibold small">
+                <i class="bi bi-sticky text-info me-1"></i>HR Note to Add
+                <span class="text-muted fw-normal">(optional)</span>
+              </label>
+              <textarea name="append_note" rows="2" class="form-control form-control-sm"
+                        placeholder="e.g. Issued starter kit on 2026-05-22 for new joiners…"></textarea>
+              <div class="mt-2 small">
+                <div class="form-check form-check-inline">
+                  <input type="radio" class="form-check-input" name="mode_note" value="append" id="bulkNoteAppend" checked>
+                  <label class="form-check-label" for="bulkNoteAppend">Append (with date + author)</label>
+                </div>
+                <div class="form-check form-check-inline">
+                  <input type="radio" class="form-check-input" name="mode_note" value="replace" id="bulkNoteReplace">
+                  <label class="form-check-label" for="bulkNoteReplace">Replace existing notes</label>
+                </div>
+              </div>
+            </div>
+
+            <!-- Target -->
+            <div class="mb-3">
+              <label class="form-label fw-semibold small">
+                <i class="bi bi-people-fill text-primary me-1"></i>Apply to which staff?
+              </label>
+              <div class="form-check">
+                <input type="radio" class="form-check-input" name="apply_to" value="all" id="applyToAll" checked>
+                <label class="form-check-label" for="applyToAll">
+                  <strong>All active staff</strong>
+                  <span class="text-muted small">— everyone except those marked Exited</span>
+                </label>
+              </div>
+              <div class="form-check">
+                <input type="radio" class="form-check-input" name="apply_to" value="selected" id="applyToSelected">
+                <label class="form-check-label" for="applyToSelected">
+                  <strong>Selected staff only</strong>
+                  <span class="text-muted small">— tick the checkboxes below</span>
+                </label>
+              </div>
+              <div id="bulkStaffSelector" class="border rounded p-3 mt-2 d-none"
+                   style="max-height: 280px; overflow-y: auto; background: #fafafa">
+                <div class="d-flex justify-content-between align-items-center mb-2 gap-2">
+                  <input type="text" id="bulkStaffSearch" class="form-control form-control-sm"
+                         placeholder="🔍  Filter staff by name or department">
+                  <div class="flex-shrink-0">
+                    <button type="button" class="btn btn-link btn-sm p-0" id="bulkSelectAll">Select all</button>
+                    <span class="text-muted">·</span>
+                    <button type="button" class="btn btn-link btn-sm p-0 text-muted" id="bulkSelectNone">Clear</button>
+                  </div>
+                </div>
+                {% for s in staff %}
+                  {% set _status = s.employment_status or 'Active' %}
+                  <div class="form-check bulk-staff-row" data-name="{{ (s.name or '')|lower }} {{ (s.designation or '')|lower }} {{ (s.department or '')|lower }}">
+                    <input type="checkbox" class="form-check-input bulk-staff-cb" name="staff_ids"
+                           value="{{ s.id }}" id="bulkStaff{{ s.id }}">
+                    <label class="form-check-label small" for="bulkStaff{{ s.id }}">
+                      <strong>{{ s.name }}</strong>
+                      {% if s.designation %}<span class="text-muted">— {{ s.designation }}</span>{% endif %}
+                      {% if _status != 'Active' %}
+                        <span class="badge bg-secondary ms-1" style="font-size:0.65rem">{{ _status }}</span>
+                      {% endif %}
+                    </label>
+                  </div>
+                {% endfor %}
+              </div>
+              <div class="form-text mt-1">
+                <span id="bulkTargetCount" class="badge bg-info text-dark"></span>
+              </div>
+            </div>
+
+            <div class="d-flex justify-content-end">
+              <button type="submit" class="btn btn-info" id="bulkAssignSubmit">
+                <i class="bi bi-send-fill me-1"></i>Apply Bulk Assignment
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
     {% endif %}
 
     <!-- ── Staff List ───────────────────────────────────────────────────────── -->
@@ -730,6 +855,80 @@ document.querySelectorAll('.tc-property-input').forEach(function(inp){
 });
 // Initial state on page load
 document.querySelectorAll('.tc-property-input').forEach(syncChipState);
+
+// ── Bulk Assign card — toggle, search, select-all, count, confirm ──────────
+(function(){
+  var selector  = document.getElementById('bulkStaffSelector');
+  var radios    = document.querySelectorAll('input[name="apply_to"]');
+  var search    = document.getElementById('bulkStaffSearch');
+  var btnAll    = document.getElementById('bulkSelectAll');
+  var btnNone   = document.getElementById('bulkSelectNone');
+  var countEl   = document.getElementById('bulkTargetCount');
+  var form      = document.getElementById('bulkAssignForm');
+  if (!form) return;        // page rendered without can_staff — nothing to wire
+  var totalActive = document.querySelectorAll('.bulk-staff-row').length;
+
+  function updateCount(){
+    var mode = document.querySelector('input[name="apply_to"]:checked').value;
+    if (mode === 'all') {
+      countEl.textContent = '→ Will apply to all ' + totalActive + ' staff';
+    } else {
+      var n = document.querySelectorAll('.bulk-staff-cb:checked').length;
+      countEl.textContent = '→ Will apply to ' + n + ' selected staff';
+    }
+  }
+
+  radios.forEach(function(r){
+    r.addEventListener('change', function(){
+      selector.classList.toggle('d-none', r.value !== 'selected' || !r.checked);
+      updateCount();
+    });
+  });
+  document.querySelectorAll('.bulk-staff-cb').forEach(function(cb){
+    cb.addEventListener('change', updateCount);
+  });
+  if (search) search.addEventListener('input', function(){
+    var q = this.value.toLowerCase().trim();
+    document.querySelectorAll('.bulk-staff-row').forEach(function(row){
+      row.classList.toggle('d-none', q && row.dataset.name.indexOf(q) === -1);
+    });
+  });
+  if (btnAll)  btnAll.addEventListener('click', function(){
+    document.querySelectorAll('.bulk-staff-row:not(.d-none) .bulk-staff-cb')
+      .forEach(function(cb){ cb.checked = true; });
+    updateCount();
+  });
+  if (btnNone) btnNone.addEventListener('click', function(){
+    document.querySelectorAll('.bulk-staff-cb').forEach(function(cb){ cb.checked = false; });
+    updateCount();
+  });
+
+  form.addEventListener('submit', function(e){
+    var mode = document.querySelector('input[name="apply_to"]:checked').value;
+    var prop = (document.getElementById('bulkPropertyInput').value || '').trim();
+    var note = (form.querySelector('textarea[name="append_note"]').value || '').trim();
+    if (!prop && !note) {
+      e.preventDefault();
+      alert('Pick at least one property item or write a note before applying.');
+      return;
+    }
+    var count = (mode === 'all')
+      ? totalActive
+      : document.querySelectorAll('.bulk-staff-cb:checked').length;
+    if (count === 0) {
+      e.preventDefault();
+      alert('No staff selected. Tick the checkboxes you want to update.');
+      return;
+    }
+    var summary = 'Apply this bulk update to ' + count +
+                  ' staff member' + (count === 1 ? '' : 's') + '?\n\n';
+    if (prop) summary += '• Property: ' + prop + '\n';
+    if (note) summary += '• Note: ' + note.substring(0, 80) + (note.length > 80 ? '…' : '') + '\n';
+    if (!window.confirm(summary)) e.preventDefault();
+  });
+
+  updateCount();
+})();
 </script>
 {% endif %}
 

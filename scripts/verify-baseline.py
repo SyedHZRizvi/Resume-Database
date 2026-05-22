@@ -309,6 +309,18 @@ def check_staff_columns(app_src: str) -> None:
     must_match(app_src,
                "UPDATE staff SET manager_id=NULL WHERE manager_id=?",
                'staff_delete clears manager_id references')
+    # Bulk-assign route (CLAUDE.md §2.4)
+    must_regex(app_src,
+               r"@app\.route\('/staff/bulk-assign',\s*methods=\['POST'\]\)\s*\n@role_required\(\*CAN_STAFF\)",
+               '/staff/bulk-assign is POST + @role_required(*CAN_STAFF)')
+    must_match(app_src, 'def staff_bulk_assign(',
+               'staff_bulk_assign() defined')
+    must_match(app_src, "apply_to == 'all'",
+               'Bulk-assign supports apply_to=all (every active staff)')
+    must_match(app_src, "mode_property",
+               'Bulk-assign supports append vs replace for property')
+    must_match(app_src, "mode_note",
+               'Bulk-assign supports append vs replace for notes')
 
 
 def check_staff_documents(app_src: str) -> None:
