@@ -8107,6 +8107,84 @@ def _extract_name_from_resume_text(text: str, email: str = '') -> str:
     return best_line
 
 
+def _claude_name_only(text: str, email: str = '') -> str:
+    """Last-resort name rescue: ask Claude one focused question — just the
+    candidate's name. The full PARSE_PROMPT mixes name extraction with 9
+    other fields and Claude occasionally returns a section heading. A
+    narrower prompt that knows about the candidate's email tends to do
+    better. Returns '' on any failure so the caller can fall through to
+    'Please Edit Name'.
+
+    This is only invoked from the on-demand and startup cleanup paths,
+    never from regular request handling — so latency and cost are bounded
+    (one Claude call per misparsed applicant, one time)."""
+    if not text or not ANTHROPIC_API_KEY:
+        return ''
+    excerpt = text[:4000]
+    hint = f' The candidate\'s email is "{email}".' if email else ''
+    prompt = (
+        "You are reading a resume and need to extract ONLY the candidate's "
+        "personal name (e.g. 'Aneesh Saha', 'Sarah Johnson', 'Saha'). "
+        "Names can be one to four words. They are NEVER job titles, "
+        "section headings (e.g. 'CORE AREAS', 'WORK EXPERIENCE', "
+        "'PROFESSIONAL SUMMARY'), company names, or page numbers." + hint +
+        " Return ONLY a JSON object with this exact shape — no prose, no "
+        'markdown, no explanation:\n'
+        '{"name": "..."}\n\n'
+        f"Resume text:\n{excerpt}"
+    )
+    try:
+        import anthropic, json as _json, re as _re
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        msg = client.messages.create(
+            model='claude-haiku-4-5-20251001',
+            max_tokens=120,
+            messages=[{'role': 'user', 'content': prompt}],
+        )
+        # Extract the text content
+        raw = ''
+        for block in (msg.content or []):
+            if getattr(block, 'type', '') == 'text':
+                raw += getattr(block, 'text', '')
+        # Find the JSON object
+        m = _re.search(r'\{[^{}]*"name"[^{}]*\}', raw, _re.DOTALL)
+        if not m:
+            return ''
+        data = _json.loads(m.group(0))
+        candidate = (data.get('name') or '').strip()
+        if candidate and _looks_like_real_name(candidate):
+            return candidate
+    except Exception as e:
+        print(f"   [Name-Rescue] Claude fallback failed: {e}")
+    return ''
+
+
+def _rescue_one_applicant_name(applicant_row) -> tuple[str, str]:
+    """Run the full rescue cascade for a single applicant row. Returns
+    (new_name, reason) where reason is one of:
+      'heuristic' — found via local text scan
+      'claude'    — found via focused Claude call
+      'placeholder' — nothing plausible, set to 'Please Edit Name'
+      'unchanged' — name already looks fine, leave alone
+    """
+    current = (applicant_row['name'] or '').strip()
+    if not current:
+        return ('Please Edit Name', 'placeholder')
+    if _looks_like_real_name(current):
+        return (current, 'unchanged')
+    parsed_text = applicant_row['parsed_text'] or ''
+    email = applicant_row['email'] or ''
+    # Layer 1 — local heuristic with email-token signal
+    candidate = _extract_name_from_resume_text(parsed_text, email)
+    if candidate:
+        return (candidate, 'heuristic')
+    # Layer 2 — focused Claude call (only when heuristic returns nothing)
+    candidate = _claude_name_only(parsed_text, email)
+    if candidate:
+        return (candidate, 'claude')
+    return ('Please Edit Name', 'placeholder')
+
+
 def _cleanup_misparsed_applicant_names():
     """One-shot cleanup that finds applicants whose stored name is
     obviously NOT a person's name (matches our `_NOT_A_NAME_TOKENS`
@@ -8120,43 +8198,132 @@ def _cleanup_misparsed_applicant_names():
     Idempotent: rows whose stored name already passes the validator are
     left alone, so this loop is a no-op on every subsequent restart.
     """
+    return _run_name_rescue_pass(silent=False)
+
+
+def _run_name_rescue_pass(silent: bool = True) -> dict:
+    """Scan every applicant, rescue the names that don't look real.
+    Returns a stats dict suitable for the on-demand admin endpoint."""
+    stats = {'rescued_heuristic': 0, 'rescued_claude': 0, 'flagged': 0,
+             'unchanged': 0, 'errors': 0, 'changes': []}
     try:
         with get_db() as conn:
             rows = conn.execute(
                 'SELECT id, name, email, parsed_text FROM applicants '
                 "WHERE name IS NOT NULL AND name != ''"
             ).fetchall()
-        rescued = 0
-        flagged = 0
         for r in rows:
             current = (r['name'] or '').strip()
             if not current:
                 continue
             if _looks_like_real_name(current):
-                continue   # name is already plausible; leave it alone
-            # Try heuristic rescue from the parsed resume text. Pass the
-            # candidate's email so the scorer can match tokens against the
-            # email's local part — this is the signal that lets us tell
-            # "ANEESH SAHA" apart from "CORE AREAS" when both appear near
-            # the top of the resume text.
-            candidate = _extract_name_from_resume_text(
-                r['parsed_text'] or '', r['email'] or '')
-            replacement = candidate if candidate else 'Please Edit Name'
+                stats['unchanged'] += 1
+                continue
+            try:
+                new_name, reason = _rescue_one_applicant_name(r)
+            except Exception as e:
+                stats['errors'] += 1
+                if not silent:
+                    print(f"   [Name-Rescue] applicant #{r['id']} error: {e}")
+                continue
+            if new_name == current:
+                stats['unchanged'] += 1
+                continue
             with get_db() as conn:
                 conn.execute('UPDATE applicants SET name=? WHERE id=?',
-                             (replacement, r['id']))
+                             (new_name, r['id']))
                 conn.commit()
-            if candidate:
-                rescued += 1
-                print(f"   [Name-Rescue] applicant #{r['id']}: "
-                      f"{current!r} → {candidate!r}")
+            if reason == 'heuristic':
+                stats['rescued_heuristic'] += 1
+            elif reason == 'claude':
+                stats['rescued_claude'] += 1
             else:
-                flagged += 1
-        if rescued or flagged:
-            print(f"   [Name-Rescue] rescued {rescued}, flagged "
-                  f"{flagged} for manual review.")
+                stats['flagged'] += 1
+            stats['changes'].append({
+                'id': r['id'],
+                'from': current,
+                'to': new_name,
+                'reason': reason,
+            })
+            if not silent:
+                print(f"   [Name-Rescue] applicant #{r['id']}: "
+                      f"{current!r} → {new_name!r} via {reason}")
+        if not silent and (stats['rescued_heuristic'] or stats['rescued_claude']
+                           or stats['flagged']):
+            print(f"   [Name-Rescue] heuristic rescued {stats['rescued_heuristic']}, "
+                  f"Claude rescued {stats['rescued_claude']}, "
+                  f"flagged {stats['flagged']} for manual review.")
     except Exception as e:
-        print(f"   [Name-Rescue] warning: {e}")
+        if not silent:
+            print(f"   [Name-Rescue] warning: {e}")
+        stats['errors'] += 1
+    return stats
+
+
+@app.route('/admin/fix-names', methods=['GET', 'POST'])
+@role_required(*CAN_USERS)
+def admin_fix_names():
+    """On-demand name-rescue trigger. HR clicks the "Fix mis-parsed names"
+    button on the home page (or hits this URL directly) and the rescue
+    runs synchronously, returning a small report. Use this when you don't
+    want to wait for the next background sweep on app restart.
+    """
+    stats = _run_name_rescue_pass(silent=False)
+    log_action('NAME RESCUE',
+               f"heuristic={stats['rescued_heuristic']} "
+               f"claude={stats['rescued_claude']} "
+               f"flagged={stats['flagged']}",
+               '')
+    return render_template_string("""
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="UTF-8">
+  <title>Fix Mis-parsed Names — TransCrypts</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+  <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet">
+</head><body class="bg-light"><div class="container py-5" style="max-width:760px">
+  <h3 class="fw-bold mb-3">
+    <i class="bi bi-magic text-primary me-2"></i>Name Rescue — done
+  </h3>
+  <div class="card border-0 shadow-sm mb-4">
+    <div class="card-body">
+      <div class="row text-center">
+        <div class="col"><div class="fs-2 fw-bold text-success">{{ stats.rescued_heuristic }}</div>
+          <div class="text-muted small">Rescued from resume text</div></div>
+        <div class="col"><div class="fs-2 fw-bold text-primary">{{ stats.rescued_claude }}</div>
+          <div class="text-muted small">Rescued via AI fallback</div></div>
+        <div class="col"><div class="fs-2 fw-bold text-warning">{{ stats.flagged }}</div>
+          <div class="text-muted small">Need manual review</div></div>
+        <div class="col"><div class="fs-2 fw-bold text-muted">{{ stats.unchanged }}</div>
+          <div class="text-muted small">Already correct</div></div>
+      </div>
+    </div>
+  </div>
+  {% if stats.changes %}
+    <h6 class="fw-bold mb-2">Changes applied</h6>
+    <ul class="list-group mb-4">
+      {% for c in stats.changes %}
+        <li class="list-group-item d-flex justify-content-between align-items-center">
+          <div>
+            <div><strong>#{{ c.id }}</strong></div>
+            <div class="small text-muted"><s>{{ c.from }}</s> &rarr;
+              <strong class="text-success">{{ c.to }}</strong></div>
+          </div>
+          <span class="badge bg-{% if c.reason == 'heuristic' %}success{% elif c.reason == 'claude' %}primary{% else %}warning text-dark{% endif %}">
+            {{ c.reason }}
+          </span>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="text-muted">No applicant names needed fixing.</p>
+  {% endif %}
+  <a href="{{ url_for('index') }}" class="btn btn-primary">
+    <i class="bi bi-arrow-left me-1"></i>Back to Applicants
+  </a>
+</div></body></html>
+""", stats=stats)
 
 
 def _backfill_file_hashes():
