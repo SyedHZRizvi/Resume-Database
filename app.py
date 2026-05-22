@@ -5132,6 +5132,21 @@ _NOT_A_NAME_TOKENS = frozenset([
     'present', 'available', 'notice', 'period', 'salary', 'ctc',
     'summary', 'description', 'tasks', 'responsibilities', 'duties',
     'key', 'major', 'minor', 'side', 'main', 'primary', 'secondary',
+    # Common role/department phrase words that frequently appear at the
+    # top of resumes as section headers or target-role labels and slip
+    # through naive name detection (e.g. "Customer Success", "Business
+    # Development", "Account Management", "Project Delivery").
+    'customer', 'success', 'support', 'service', 'services', 'client',
+    'clients', 'relationship', 'relations', 'business', 'product',
+    'project', 'program', 'process', 'operations', 'operational',
+    'sales', 'marketing', 'finance', 'financial', 'accounting',
+    'account', 'accounts', 'delivery', 'logistics', 'procurement',
+    'supply', 'chain', 'research', 'analytics', 'data', 'quality',
+    'assurance', 'compliance', 'risk', 'audit', 'human', 'resources',
+    'talent', 'acquisition', 'recruitment', 'recruiting', 'staffing',
+    'hr', 'it', 'is', 'ict', 'cyber', 'security', 'network',
+    'infrastructure', 'cloud', 'platform', 'software', 'hardware',
+    'systems', 'system', 'solutions', 'solution',
     # ── Company / legal-entity terms ───────────────────────────────────────
     'inc', 'llc', 'ltd', 'corp', 'corporation', 'company', 'enterprise',
     'group', 'holdings', 'limited', 'gmbh', 'ag', 'sa',
@@ -8259,7 +8274,29 @@ def _run_name_rescue_pass(silent: bool = True) -> dict:
             current = (r['name'] or '').strip()
             if not current:
                 continue
-            if _looks_like_real_name(current):
+            # Two skip criteria — name must pass BOTH to be left alone:
+            #   1. Survives the static blacklist (no obvious section words)
+            #   2. Shares at least one token with the candidate's own
+            #      email tokens — when an email is available.
+            # The second check is what catches AI-parser failures like
+            # "Customer Success" that pass criterion 1 but clearly don't
+            # belong to the candidate whose email is e.g. aneesh.saha@…
+            import re as _re_inner
+            email = r['email'] or ''
+            email_tokens = _email_local_tokens(email)
+            if not email_tokens and (r['parsed_text'] or ''):
+                m = _re_inner.search(r'[\w.+\-]+@[\w.\-]+\.\w+', r['parsed_text'])
+                if m:
+                    email_tokens = _email_local_tokens(m.group(0))
+            name_passes_blacklist = _looks_like_real_name(current)
+            if email_tokens:
+                _name_tokens = {_re_inner.sub(r"[^a-z]", '', w.lower())
+                                for w in current.split()}
+                _name_tokens.discard('')
+                name_matches_email = bool(_name_tokens & email_tokens)
+            else:
+                name_matches_email = True  # no email to compare → trust it
+            if name_passes_blacklist and name_matches_email:
                 stats['unchanged'] += 1
                 continue
             try:
