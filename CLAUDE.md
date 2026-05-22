@@ -139,6 +139,16 @@ When adding a new button to the navbar:
     Idempotent: a row whose name already passes the validator is
     never touched.
 
+    The extractor uses **email-token matching** as its primary signal:
+    if the candidate's email is `aneesh.saha@…`, then a candidate
+    line "ANEESH SAHA" matches and "CORE AREAS" does not. Each
+    matching token is worth +5; Title Case is +2; top-of-resume
+    position is +1; multi-word ALL CAPS lines get -3. The winning
+    line must have a strictly positive score — otherwise the record
+    is flagged for manual review. This is the layer that defends
+    against section headings that happen to satisfy the simple
+    "looks like a name" word-token rules.
+
 ### 2.3 Role / permission model
 
 Defined in `app.py` near the top:

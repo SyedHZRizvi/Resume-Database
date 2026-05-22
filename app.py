@@ -5105,14 +5105,28 @@ def staff_list():
 # extractions from the careers form parser. Conservative list — we'd rather
 # accept an odd name than reject a real one.
 _NOT_A_NAME_TOKENS = frozenset([
+    # ── Job-title / role words ─────────────────────────────────────────────
     'manager', 'management', 'managing', 'engineer', 'engineering',
     'developer', 'development', 'specialist', 'consultant', 'analyst',
     'representative', 'coordinator', 'administrator', 'administration',
     'director', 'officer', 'executive', 'supervisor', 'designer',
     'architect', 'lead', 'leader', 'leadership', 'intern', 'internship',
+    'associate', 'assistant', 'principal', 'senior', 'junior', 'head',
+    # ── Resume section headings (the bug-of-the-day generators) ────────────
     'experience', 'skills', 'education', 'references', 'summary',
     'objective', 'profile', 'projects', 'certifications',
-    'inc', 'llc', 'ltd', 'corp', 'corporation', 'company',
+    'core', 'areas', 'expertise', 'competencies', 'qualifications',
+    'achievements', 'accomplishments', 'awards', 'publications',
+    'interests', 'hobbies', 'languages', 'personal', 'details',
+    'information', 'contact', 'address', 'about', 'work', 'employment',
+    'history', 'background', 'volunteer', 'activities', 'affiliations',
+    'memberships', 'training', 'courses', 'highlights', 'overview',
+    'introduction', 'career', 'goal', 'goals', 'mission', 'vision',
+    'strengths', 'tools', 'technologies', 'technical', 'professional',
+    'curriculum', 'vitae', 'resume', 'biography',
+    # ── Company / legal-entity terms ───────────────────────────────────────
+    'inc', 'llc', 'ltd', 'corp', 'corporation', 'company', 'enterprise',
+    'group', 'holdings', 'limited', 'gmbh', 'ag', 'sa',
 ])
 
 
@@ -7995,21 +8009,52 @@ def _auto_reanalyze_on_startup():
         print(f"   [Auto-Update] Warning: background re-analysis encountered an error: {e}")
 
 
-def _extract_name_from_resume_text(text: str) -> str:
-    """Heuristic: find the candidate's name in the first ~20 lines of the
-    parsed resume text. We scan top-down for the first line that passes
-    `_looks_like_real_name()`, after stripping common prefixes like
-    "Name:" / "CV of" / "Resume of". Returns '' if nothing plausible found.
+def _email_local_tokens(email: str) -> set:
+    """Tokens extracted from an email's local part. 'aneesh.saha@x.com' →
+    {'aneesh', 'saha'}. Used to validate name extractions against the
+    candidate's own email — a much stronger signal than line position
+    in the resume text."""
+    import re as _re
+    if not email or '@' not in email:
+        return set()
+    local = email.split('@', 1)[0].lower()
+    # Split on common separators: . _ + -
+    parts = _re.split(r'[._+\-]', local)
+    return {p for p in parts if p and len(p) >= 2 and not p.isdigit()}
 
-    This is the fallback when the AI parser misreads a section heading
-    (e.g. "Client Relationship Management") as the candidate's name.
+
+def _extract_name_from_resume_text(text: str, email: str = '') -> str:
+    """Find the candidate's name in the first ~30 lines of the parsed
+    resume text. Returns '' if nothing plausible is found.
+
+    Strategy: collect every line that passes `_looks_like_real_name()`,
+    then score them and return the highest-scoring candidate. Signals:
+      • +5 for each token shared with the candidate's email local-part
+        (e.g. line "ANEESH SAHA" + email "aneesh.saha@…" → +10).
+      • +2 for Title Case (e.g. "John Smith") — most likely a name.
+      • +1 for being on or before line 5 (names tend to be at the top).
+      • -3 if the line is multi-word ALL CAPS (often a section heading).
+      • -2 for each additional line position past line 5.
+
+    Using the email is the breakthrough: section-heading candidates
+    like "CORE AREAS" / "PROFESSIONAL SUMMARY" never match the email,
+    while the candidate's actual name almost always does.
     """
     if not text:
         return ''
+    import re as _re
+    # Find an email in the text if the caller didn't supply one
+    if not email:
+        m = _re.search(r'[\w.+\-]+@[\w.\-]+\.\w+', text)
+        if m:
+            email = m.group(0)
+    email_tokens = _email_local_tokens(email)
+
     lines = text.splitlines()
     prefixes = ('name:', 'full name:', 'candidate:', 'cv of', 'resume of',
                 'curriculum vitae of')
-    for raw in lines[:25]:
+    candidates = []
+    for idx, raw in enumerate(lines[:30]):
         line = raw.strip()
         if not line:
             continue
@@ -8020,9 +8065,46 @@ def _extract_name_from_resume_text(text: str) -> str:
                 break
         # Strip dash / bullet decorations resume builders add
         line = line.lstrip('-*•·–— ').strip()
-        if _looks_like_real_name(line):
-            return line
-    return ''
+        if not _looks_like_real_name(line):
+            continue
+
+        score = 0
+        words = line.split()
+        line_tokens = {_re.sub(r"[^a-z]", '', w.lower()) for w in words}
+        line_tokens.discard('')
+
+        # Email-match: strongest signal we have
+        overlap = len(line_tokens & email_tokens)
+        if overlap:
+            score += 5 * overlap
+
+        # Title Case is more name-like than ALL CAPS
+        if all(w[:1].isupper() and w[1:].islower() for w in words if len(w) > 1):
+            score += 2
+        # Multi-word ALL CAPS is suspicious (often a section heading)
+        if len(words) >= 2 and line.isupper():
+            score -= 3
+
+        # Position bonus — top of the resume is name territory
+        if idx <= 5:
+            score += 1
+        else:
+            score -= (idx - 5) // 5  # mild penalty as we go further down
+
+        candidates.append((score, idx, line))
+
+    if not candidates:
+        return ''
+    # Highest score wins; tiebreak by earliest line (lower idx)
+    candidates.sort(key=lambda t: (-t[0], t[1]))
+    best_score, _, best_line = candidates[0]
+    # Require a positive signal — never accept a candidate purely on
+    # position. If the best score is <= 0, it's just a section heading
+    # that happened to slip past _looks_like_real_name; better to flag
+    # the record for manual review.
+    if best_score <= 0:
+        return ''
+    return best_line
 
 
 def _cleanup_misparsed_applicant_names():
@@ -8041,7 +8123,7 @@ def _cleanup_misparsed_applicant_names():
     try:
         with get_db() as conn:
             rows = conn.execute(
-                'SELECT id, name, parsed_text FROM applicants '
+                'SELECT id, name, email, parsed_text FROM applicants '
                 "WHERE name IS NOT NULL AND name != ''"
             ).fetchall()
         rescued = 0
@@ -8052,8 +8134,13 @@ def _cleanup_misparsed_applicant_names():
                 continue
             if _looks_like_real_name(current):
                 continue   # name is already plausible; leave it alone
-            # Try heuristic rescue from the parsed resume text
-            candidate = _extract_name_from_resume_text(r['parsed_text'] or '')
+            # Try heuristic rescue from the parsed resume text. Pass the
+            # candidate's email so the scorer can match tokens against the
+            # email's local part — this is the signal that lets us tell
+            # "ANEESH SAHA" apart from "CORE AREAS" when both appear near
+            # the top of the resume text.
+            candidate = _extract_name_from_resume_text(
+                r['parsed_text'] or '', r['email'] or '')
             replacement = candidate if candidate else 'Please Edit Name'
             with get_db() as conn:
                 conn.execute('UPDATE applicants SET name=? WHERE id=?',

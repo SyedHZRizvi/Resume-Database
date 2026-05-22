@@ -252,6 +252,18 @@ def check_name_preservation(app_src: str) -> None:
                'Heuristic name extractor defined')
     must_match(app_src, '_cleanup_misparsed_applicant_names()',
                'Name-rescue cleanup is called from startup tasks')
+    # Email-token matching is the breakthrough signal — without it, "CORE
+    # AREAS" beats "ANEESH SAHA" because both pass the simple name-shape
+    # rules. Don't let this regress.
+    must_match(app_src, '_email_local_tokens',
+               'Email-token extractor present (powers name scoring)')
+    must_match(app_src, 'email_tokens',
+               'Extractor uses email_tokens for candidate scoring')
+    # Section-heading words must stay in the blacklist
+    for token in ("'core'", "'areas'", "'expertise'", "'competencies'",
+                  "'qualifications'", "'achievements'"):
+        must_match(app_src, token,
+                   f'_NOT_A_NAME_TOKENS includes {token}')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
