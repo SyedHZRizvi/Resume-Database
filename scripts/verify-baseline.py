@@ -217,14 +217,20 @@ def check_csrf_exempts(app_src: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# §8  Resume download serves as attachment
+# §8  Resume serving — PDFs/images inline, others forced download
 # ─────────────────────────────────────────────────────────────────────────────
 def check_resume_download(app_src: str) -> None:
-    section('Resume download served as attachment')
-    must_match(app_src, 'as_attachment=True',
-               'send_from_directory uses as_attachment=True')
+    section('Resume serving — inline view for safe formats, download fallback')
+    must_match(app_src, 'RESUME_INLINE_EXTENSIONS',
+               'RESUME_INLINE_EXTENSIONS set defined')
+    must_match(app_src, '_resume_can_render_inline',
+               '_resume_can_render_inline() helper defined')
+    must_match(app_src, "request.args.get('download') == '1'",
+               'Explicit ?download=1 query forces attachment')
+    must_match(app_src, 'as_attachment=force_download',
+               'send_from_directory respects the force_download flag')
     must_match(app_src, 'download=1',
-               'Supabase signed URL gets download=1 query')
+               'Supabase path appends download=1 when forcing attachment')
 
 
 # ─────────────────────────────────────────────────────────────────────────────

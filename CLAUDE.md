@@ -114,8 +114,12 @@ When adding a new button to the navbar:
    `UPDATE` and `DELETE` on `audit_log`. Don't remove the trigger from
    `init_db()`. If a future feature seems to need to modify a past
    audit row, the right answer is to insert a new corrective row instead.
-10. **Resume downloads** are served with `as_attachment=True` (local) and
-    `?download=1` (Supabase signed URLs). Don't change to inline.
+10. **Resume serving** — HR needs to PREVIEW resumes in the browser, so
+    PDFs and images (extensions in `RESUME_INLINE_EXTENSIONS`) render
+    INLINE by default. DOC/DOCX (which the browser cannot render anyway)
+    still force a download. Any caller can append `?download=1` to force
+    the download path for any format. Staff documents (contracts/IDs/
+    visas) remain forced-download regardless of format — see §2.5.
 
 ### 2.3 Role / permission model
 

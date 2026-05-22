@@ -649,8 +649,8 @@
           </h5>
 
           <form method="POST" action="{{ url_for('add_interview', applicant_id=applicant.id) }}"
-                onsubmit="setTimeout(function(){ var b=document.getElementById('ivSubmitBtn'); b.disabled=true; b.innerHTML='<span class=\'spinner-border spinner-border-sm me-1\'>
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"></span>Saving…'; }, 0)">
+                onsubmit="setTimeout(function(){ var b=document.getElementById('ivSubmitBtn'); b.disabled=true; b.innerHTML='<span class=\'spinner-border spinner-border-sm me-1\'></span>Saving…'; }, 0)">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
             {# ── Row 1: Date / Time / Format / Outcome ── #}
             <div class="row g-3 mb-4">

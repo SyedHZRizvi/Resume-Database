@@ -2910,29 +2910,55 @@ def delete_resume(applicant_id):
     return redirect(url_for('index'))
 
 
+# File extensions that browsers can safely render inline. Anything else
+# (DOC, DOCX) is forced to download because the browser can't display it.
+# X-Content-Type-Options=nosniff (set globally) prevents MIME confusion, and
+# modern browsers sandbox PDF rendering, so inline display is acceptable.
+RESUME_INLINE_EXTENSIONS = {'pdf', 'jpg', 'jpeg', 'png', 'gif', 'webp',
+                            'bmp', 'tiff', 'tif'}
+
+
+def _resume_can_render_inline(filename: str) -> bool:
+    if '.' not in filename:
+        return False
+    return filename.rsplit('.', 1)[-1].lower() in RESUME_INLINE_EXTENSIONS
+
+
 @app.route('/uploads/<filename>')
 @role_required(*CAN_DOWNLOAD)
 def uploaded_file(filename):
     """
     Serve a resume file.
 
+    UX rule: PDFs and images render INLINE in the browser so HR can preview
+    the resume without first downloading. DOC/DOCX (which the browser cannot
+    render anyway) force a download via Content-Disposition: attachment.
+
+    Security: nosniff header is already set globally; modern browsers
+    sandbox PDF rendering and reject mismatched MIME on inline images.
+    A separate `/uploads/<filename>?download=1` query forces download for
+    any format when the user explicitly clicks a download button.
+
     • Local backend  → send the file from disk
     • Supabase backend → redirect to a short-lived signed URL
                          (browser fetches directly from Supabase Storage)
     """
+    force_download = (request.args.get('download') == '1') or \
+                     (not _resume_can_render_inline(filename))
+
     if _storage.backend() == 'supabase':
         signed = _storage.file_url(filename, expires=3600)
         if not signed:
             flash('File not found in storage.', 'error')
             return redirect(url_for('index'))
-        # Force browser-side download instead of inline rendering. A PDF
-        # uploaded with embedded JavaScript or an HTML file masquerading
-        # as PDF would otherwise execute in our origin.
-        sep = '&' if '?' in signed else '?'
-        return redirect(f'{signed}{sep}download=1')
-    # Local: send with Content-Disposition: attachment for the same reason.
+        if force_download:
+            sep = '&' if '?' in signed else '?'
+            return redirect(f'{signed}{sep}download=1')
+        # Inline view — Supabase serves the file with its declared MIME type.
+        return redirect(signed)
+    # Local backend
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename,
-                                as_attachment=True)
+                                as_attachment=force_download)
 
 
 # ─── Interview routes ──────────────────────────────────────────────────────────
@@ -5041,6 +5067,51 @@ def staff_list():
                            staff_doc_categories=STAFF_DOC_CATEGORIES)
 
 
+# Words that strongly indicate a string is a job title / section heading
+# rather than a person's name. Used to reject obviously-wrong AI name
+# extractions from the careers form parser. Conservative list — we'd rather
+# accept an odd name than reject a real one.
+_NOT_A_NAME_TOKENS = frozenset([
+    'manager', 'management', 'managing', 'engineer', 'engineering',
+    'developer', 'development', 'specialist', 'consultant', 'analyst',
+    'representative', 'coordinator', 'administrator', 'administration',
+    'director', 'officer', 'executive', 'supervisor', 'designer',
+    'architect', 'lead', 'leader', 'leadership', 'intern', 'internship',
+    'experience', 'skills', 'education', 'references', 'summary',
+    'objective', 'profile', 'projects', 'certifications',
+    'inc', 'llc', 'ltd', 'corp', 'corporation', 'company',
+])
+
+
+def _looks_like_real_name(text: str) -> bool:
+    """Heuristic: does `text` look like a real human name (not a job title
+    or section heading)? Returns True for "Sarah Ahmed" / "Mohammed Khan" /
+    single-word names like "Saha", False for "Client Relationship Management"
+    / "Senior Engineer" / "Work Experience". This is intentionally a guard
+    against the most common AI parse failures — it is NOT a strict validator
+    and is not a substitute for the candidate-typed form field."""
+    s = (text or '').strip()
+    if not s:
+        return False
+    # Reject very long strings (real names are short)
+    if len(s) > 60:
+        return False
+    # Reject anything with digits or symbols beyond . - ' space
+    import re as _re
+    if _re.search(r"[^\w\s.\-']", s, _re.UNICODE):
+        return False
+    words = s.split()
+    if len(words) > 5:
+        return False
+    lower_tokens = {w.lower().strip(".-'") for w in words}
+    if lower_tokens & _NOT_A_NAME_TOKENS:
+        return False
+    # Must contain at least one alphabetic character
+    if not _re.search(r'[A-Za-z]', s):
+        return False
+    return True
+
+
 def _clean_property_list(raw: str) -> str:
     """Normalize a comma-separated property list: trim each item, drop
     empties and duplicates (case-insensitive), keep original casing of the
@@ -5734,10 +5805,19 @@ def api_careers_apply():
     parsed_email = (parsed.get('email') or '').strip()
     parsed_phone = (parsed.get('phone') or '').strip()
 
-    # Effective identity: prefer what's in the resume, fall back to form input.
-    name  = parsed_name  or form_name
-    email = parsed_email or form_email
-    phone = parsed_phone or form_phone
+    # If the AI's "name" looks like a job title or section heading, drop it —
+    # candidates type their real name into the form, so we trust that.
+    if parsed_name and not _looks_like_real_name(parsed_name):
+        parsed_name = ''
+
+    # Effective identity: prefer what the candidate TYPED into the form (they
+    # know their own name), fall back to the parsed name only when the form
+    # field was empty. The opposite order was a bug — Claude occasionally
+    # misreads a section heading as the name (e.g. "Client Relationship
+    # Management") and that was overriding the candidate's real name.
+    name  = form_name  or parsed_name
+    email = form_email or parsed_email
+    phone = form_phone or parsed_phone
 
     # If we have neither a parsed name/email NOR form name/email, we can't
     # create a usable record. Ask the candidate to provide readable contact info.
