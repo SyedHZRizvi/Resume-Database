@@ -1206,23 +1206,43 @@ function renderAiQuestions(questions, position) {
 async function generateAiQuestions() {
   const body = document.getElementById('aiQuestionsBody');
   body.innerHTML = aiQuestionsLoadingHtml();
-  let resp, data;
+  let resp;
   try {
     resp = await fetch('/api/ai/interview-questions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify({ applicant_id: AI_APPLICANT_ID }),
     });
-    data = await resp.json();
   } catch (e) {
     body.innerHTML = aiQuestionsErrorHtml(
-      'Connection error — please check your network and try again.');
+      'Network error — please check your connection and try again.');
     const btn = document.getElementById('aiQuestionsRetryBtn');
     if (btn) btn.addEventListener('click', generateAiQuestions);
     return;
   }
+  // Status-specific messages BEFORE we try to parse JSON — many failure
+  // paths (Flask-Limiter 429, CSRF 400 plain-text, gateway timeouts) don't
+  // return JSON, so `resp.json()` would throw and we'd surface a misleading
+  // "Connection error".
+  let data = null;
+  try { data = await resp.json(); } catch (_e) { /* non-JSON body — handled below */ }
   if (!resp.ok || !data || data.ok !== true || !Array.isArray(data.questions)) {
-    const msg = (data && data.message) || 'AI service returned an error.';
+    let msg;
+    if (data && data.message) {
+      msg = data.message;
+    } else if (resp.status === 429) {
+      msg = 'You have reached the AI Interview Questions limit for this hour or day. Please try again later.';
+    } else if (resp.status === 400 && data && data.code === 'csrf') {
+      msg = 'Your session expired. Please refresh the page and try again.';
+    } else if (resp.status === 401 || resp.status === 403) {
+      msg = 'Your session is no longer signed in. Please refresh and log in again.';
+    } else if (resp.status === 503) {
+      msg = 'AI Interview Questions are not configured on this server.';
+    } else if (resp.status >= 500) {
+      msg = 'The AI service is temporarily unavailable. Please try again in a minute.';
+    } else {
+      msg = 'AI service returned an unexpected response (status ' + resp.status + ').';
+    }
     body.innerHTML = aiQuestionsErrorHtml(msg);
     const btn = document.getElementById('aiQuestionsRetryBtn');
     if (btn) btn.addEventListener('click', generateAiQuestions);

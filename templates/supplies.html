@@ -259,7 +259,7 @@
                       <i class="bi bi-clock-history"></i>
                     </button>
                     <form method="POST" action="{{ url_for('supplies_delete', supply_id=s.id) }}"
-                          onsubmit="return confirm('Remove {{ s.name }} from the supplies list? Historical movements will be kept.')"
+                          onsubmit="return confirm('Remove ' + {{ s.name|tojson }} + ' from the supplies list? Historical movements will be kept.')"
                           class="d-inline m-0">
                       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                       <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove">

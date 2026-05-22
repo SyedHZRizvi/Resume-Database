@@ -277,8 +277,19 @@ app.config['WTF_CSRF_TIME_LIMIT'] = None     # session lifetime is the limit
 
 @app.errorhandler(CSRFError)
 def _handle_csrf_error(e):
-    return ('CSRF token missing or invalid. Refresh the page and try again.',
-            400)
+    msg = 'CSRF token missing or invalid. Refresh the page and try again.'
+    # JSON callers (the fetch shim, AJAX endpoints under /api/, anything
+    # explicitly negotiating JSON) get a structured error so their
+    # `response.json()` call succeeds and they can surface a useful message
+    # instead of "Connection error".
+    wants_json = (
+        request.path.startswith('/api/')
+        or request.is_json
+        or 'application/json' in (request.headers.get('Accept') or '')
+    )
+    if wants_json:
+        return jsonify({'ok': False, 'message': msg, 'code': 'csrf'}), 400
+    return (msg, 400)
 
 # Expose csrf_token() everywhere so templates can include it without each
 # route having to pass it explicitly.
@@ -1018,7 +1029,13 @@ def _build_identity_fingerprint(name: str, specialty: str = '', notes: str = '',
     # Try to find a year-like 4-digit number in notes (cheap grad-year hint)
     yr_match = _re.search(r'\b(19|20)\d{2}\b', notes or '')
     year = yr_match.group(0) if yr_match else ''
-    return f"{_norm(name)}|{_norm(specialty)}|{_norm(highest_education)}|{year}".strip()
+    parts = [_norm(name), _norm(specialty), _norm(highest_education), year]
+    # If every component is empty, return '' — otherwise two distinct
+    # applicants with nothing but a phone number would share the
+    # fingerprint "|||" and be flagged as semantic duplicates of each other.
+    if not any(parts):
+        return ''
+    return '|'.join(parts)
 
 
 def _normalize_skills_array(raw):
@@ -4874,9 +4891,17 @@ def parse_resume():
 # The route is gated to CAN_NOTES (the same group that can record interviews)
 # and rate-limited to cap Anthropic spend at 20/hour / 100/day per user. See
 # §2.7 in CLAUDE.md for the full contract.
+# Rate-limit key: prefer the signed-in username so two HR users on the same
+# office NAT each get their own 20/hour quota. Falls back to remote IP for
+# unauthenticated traffic (shouldn't happen here — the route is role_required
+# — but the fallback keeps Flask-Limiter happy).
+def _ai_per_user_key():
+    return f"u:{session.get('username')}" if session.get('username') else get_remote_address()
+
+
 @app.route('/api/ai/interview-questions', methods=['POST'])
 @role_required(*CAN_NOTES)
-@limiter.limit('20/hour;100/day')
+@limiter.limit('20/hour;100/day', key_func=_ai_per_user_key)
 def api_ai_interview_questions():
     if not ANTHROPIC_API_KEY:
         return jsonify({
@@ -4896,10 +4921,13 @@ def api_ai_interview_questions():
     position_override = (body.get('position_override') or '').strip()[:200]
 
     # ── Load the applicant profile ──────────────────────────────────────────
+    # parsed_text is included so that applicants manually added without
+    # the AI parse step still get a rich enough prompt; we cap at ~3000
+    # chars to stay well below the model's max-tokens budget.
     with get_db() as conn:
         row = conn.execute(
             'SELECT id, name, email, specialty, years_experience, '
-            'highest_education, skills, notes, linkedin_url '
+            'highest_education, skills, notes, linkedin_url, parsed_text '
             'FROM applicants WHERE id=?',
             (applicant_id,)
         ).fetchone()
@@ -4909,6 +4937,9 @@ def api_ai_interview_questions():
     position = position_override or (profile.get('specialty') or 'General')
 
     # ── Build the prompt and call Claude ─────────────────────────────────────
+    parsed_excerpt = (profile.get('parsed_text') or '').strip()
+    if parsed_excerpt:
+        parsed_excerpt = parsed_excerpt[:3000]
     profile_block = (
         f"Name: {profile.get('name') or 'Unknown'}\n"
         f"Specialty: {profile.get('specialty') or '—'}\n"
@@ -4918,6 +4949,8 @@ def api_ai_interview_questions():
         f"LinkedIn: {profile.get('linkedin_url') or '—'}\n"
         f"Resume notes (HR summary): {(profile.get('notes') or '—')[:1000]}"
     )
+    if parsed_excerpt:
+        profile_block += f"\n\nResume excerpt (first 3000 chars):\n{parsed_excerpt}"
 
     prompt = (
         "You are an expert interviewer at TransCrypts.\n"
@@ -6511,6 +6544,7 @@ def api_status():
 
 
 @app.route('/admin/email/dns-records')
+@role_required(*CAN_USERS)
 def admin_email_dns_records():
     """
     Fetch DNS records from Resend so the user knows EXACTLY what to add to
