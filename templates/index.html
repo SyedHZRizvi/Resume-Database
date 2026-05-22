@@ -491,10 +491,31 @@
                 <td class="ps-4 text-muted">{{ loop.index }}</td>
 
                 <td>
+                  {% set _bad_name_words = ['please edit name', 'customer success',
+                    'core areas', 'client relationship management', 'business development',
+                    'product management', 'account management', 'reporting', 'profile',
+                    'summary', 'objective', 'professional summary'] %}
+                  {% set _name_lower = (a.name or '')|lower %}
+                  {% set _name_looks_bad = (not a.name) or (_name_lower in _bad_name_words) %}
                   <a href="{{ url_for('view_resume', applicant_id=a.id) }}"
-                     class="applicant-name-link fw-semibold text-decoration-none">
-                    <i class="bi bi-person-circle me-1 text-primary"></i>{{ a.name }}
+                     class="applicant-name-link fw-semibold text-decoration-none
+                            {% if _name_looks_bad %}text-warning{% endif %}">
+                    <i class="bi bi-person-circle me-1 text-primary"></i>{{ a.name or '(no name)' }}
                   </a>
+                  {% if can_users %}
+                    <button type="button" class="btn btn-link btn-sm p-0 ms-1 quick-rename-trigger"
+                            data-applicant-id="{{ a.id }}"
+                            data-current-name="{{ a.name or '' }}"
+                            title="Quick-rename this applicant"
+                            style="font-size:0.85rem; line-height:1; vertical-align:middle">
+                      <i class="bi bi-pencil-square {% if _name_looks_bad %}text-warning{% else %}text-muted{% endif %}"></i>
+                    </button>
+                    {% if _name_looks_bad %}
+                      <span class="badge bg-warning text-dark ms-1" style="font-size:0.65rem">
+                        needs fix
+                      </span>
+                    {% endif %}
+                  {% endif %}
                   {% if is_career %}
                     <span class="career-badge ms-2" title="Applied via website career form">
                       <i class="bi bi-globe2"></i> Applied Online
@@ -826,6 +847,59 @@ document.querySelectorAll('#filterForm input, #filterForm select').forEach(el =>
             attach(el);
           });
         }, 200);
+      });
+    });
+  })();
+</script>
+
+<script>
+  // Quick-rename: click the pencil next to an applicant name → prompt → save.
+  // Updates the row in place without a page reload. /*quick-rename-trigger*/
+  (function(){
+    var token = document.querySelector('meta[name="csrf-token"]');
+    token = token ? token.content : '';
+    document.addEventListener('click', function(e){
+      var btn = e.target.closest('.quick-rename-trigger');
+      if (!btn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var id      = btn.dataset.applicantId;
+      var current = btn.dataset.currentName || '';
+      var fresh   = window.prompt(
+        'Enter the correct full name for this applicant:\n' +
+        '(Current: ' + (current || '(blank)') + ')',
+        current === 'Please Edit Name' ? '' : current
+      );
+      if (fresh === null) return;        // cancelled
+      fresh = (fresh || '').trim();
+      if (!fresh) { alert('Name cannot be empty.'); return; }
+      fetch('/api/applicants/' + id + '/quick-rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json',
+                   'X-CSRFToken': token,
+                   'Accept': 'application/json' },
+        body: JSON.stringify({ name: fresh }),
+      }).then(function(r){ return r.json(); }).then(function(d){
+        if (d.ok) {
+          // Update the row in place — no reload needed
+          var link = btn.parentElement.querySelector('.applicant-name-link');
+          if (link) {
+            // Preserve the icon, only swap the text node
+            var icon = link.querySelector('i.bi');
+            link.textContent = ' ' + d.name;
+            if (icon) link.insertBefore(icon, link.firstChild);
+            link.classList.remove('text-warning');
+          }
+          btn.dataset.currentName = d.name;
+          btn.querySelector('i.bi').classList.remove('text-warning');
+          btn.querySelector('i.bi').classList.add('text-muted');
+          var badge = btn.parentElement.querySelector('.badge.bg-warning');
+          if (badge) badge.remove();
+        } else {
+          alert(d.message || 'Could not save the name.');
+        }
+      }).catch(function(){
+        alert('Network error — please try again.');
       });
     });
   })();
