@@ -5324,8 +5324,6 @@ def staff_delete(staff_id):
 # get the same starter kit, or rolling out a policy note to everyone.
 # Idempotent: appends to existing values by default (with a Replace option).
 
-@app.route('/staff/bulk-assign', methods=['POST'])
-@role_required(*CAN_STAFF)
 def _append_staff_note(existing: str, new_note: str) -> str:
     """Append a timestamped + author-stamped note to an existing notes blob.
     Used by both the inline quick-add endpoint and the bulk-assign route."""
@@ -5362,6 +5360,8 @@ def api_staff_add_note(staff_id):
     return jsonify({'ok': True, 'notes': combined})
 
 
+@app.route('/staff/bulk-assign', methods=['POST'])
+@role_required(*CAN_STAFF)
 def staff_bulk_assign():
     f = request.form
     apply_to        = (f.get('apply_to') or 'selected').strip()
