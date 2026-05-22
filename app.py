@@ -8366,6 +8366,134 @@ def api_applicants_quick_rename(applicant_id):
     return jsonify({'ok': True, 'name': new_name})
 
 
+@app.route('/admin/find-applicant', methods=['GET'])
+@role_required(*CAN_USERS)
+def admin_find_applicant():
+    """Direct search-and-fix page for applicant names. Type ANY substring of
+    the current name or email, see matching rows with an inline-edit input,
+    type the correct name, click Save. Bypasses all the auto-detection
+    heuristics — this is the manual override when the AI / heuristic
+    can't figure out the right name from the resume.
+    """
+    q = (request.args.get('q') or '').strip()
+    rows = []
+    if q:
+        like = f'%{q}%'
+        with get_db() as conn:
+            rows = conn.execute(
+                'SELECT id, name, email, date_added FROM applicants '
+                'WHERE name LIKE ? COLLATE NOCASE OR email LIKE ? COLLATE NOCASE '
+                'ORDER BY id DESC LIMIT 50',
+                (like, like)
+            ).fetchall()
+    return render_template_string("""
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="UTF-8">
+  <title>Find &amp; Fix Applicant Name — TransCrypts</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+  <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+</head><body class="bg-light">
+<div class="container py-5" style="max-width:820px">
+  <h3 class="fw-bold mb-3">
+    <i class="bi bi-search text-primary me-2"></i>Find &amp; fix an applicant's name
+  </h3>
+  <p class="text-muted small">
+    Type any part of the current (wrong) name OR the applicant's email.
+    Matching applicants appear below — type the correct name in the input
+    and click <strong>Save</strong>. The edit is permanent — no automated
+    process can overwrite it.
+  </p>
+
+  <form method="GET" class="d-flex gap-2 mb-4">
+    <input type="text" name="q" value="{{ q }}" class="form-control"
+           placeholder="e.g. customer / saha / aneesh / @transcrypts" autofocus>
+    <button class="btn btn-primary"><i class="bi bi-search me-1"></i>Search</button>
+  </form>
+
+  {% if q %}
+    {% if rows %}
+      <div class="vstack gap-3">
+        {% for r in rows %}
+          <div class="card border-0 shadow-sm">
+            <div class="card-body p-3">
+              <div class="text-muted small mb-1">
+                <strong>#{{ r.id }}</strong> ·
+                {{ r.email or '(no email on file)' }} ·
+                added {{ (r.date_added or '')[:10] }}
+              </div>
+              <form class="qr-form d-flex gap-2 align-items-center"
+                    data-applicant-id="{{ r.id }}">
+                <input type="text" class="form-control form-control-sm"
+                       value="{{ r.name or '' }}" maxlength="120"
+                       placeholder="Type the correct name…">
+                <button type="submit" class="btn btn-success btn-sm flex-shrink-0">
+                  <i class="bi bi-check2"></i> Save
+                </button>
+                <a href="{{ url_for('view_resume', applicant_id=r.id) }}"
+                   class="btn btn-outline-secondary btn-sm flex-shrink-0">
+                  <i class="bi bi-eye"></i> View
+                </a>
+                <span class="qr-status small text-muted"></span>
+              </form>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="text-muted text-center py-5">
+        <i class="bi bi-inbox display-6 opacity-50"></i>
+        <p class="mt-2">No applicants match "{{ q }}".</p>
+      </div>
+    {% endif %}
+  {% endif %}
+
+  <hr class="my-4">
+  <a href="{{ url_for('index') }}" class="btn btn-link">
+    <i class="bi bi-arrow-left me-1"></i>Back to Applicants
+  </a>
+</div>
+<script>
+(function(){
+  var token = document.querySelector('meta[name="csrf-token"]').content;
+  document.querySelectorAll('.qr-form').forEach(function(form){
+    form.addEventListener('submit', function(e){
+      e.preventDefault();
+      var id     = form.dataset.applicantId;
+      var input  = form.querySelector('input[type=text]');
+      var btn    = form.querySelector('button[type=submit]');
+      var status = form.querySelector('.qr-status');
+      var name   = (input.value || '').trim();
+      if (!name) { status.textContent = 'Enter a name.'; return; }
+      btn.disabled = true; status.textContent = 'Saving…';
+      fetch('/api/applicants/' + id + '/quick-rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json',
+                   'X-CSRFToken': token,
+                   'Accept': 'application/json' },
+        body: JSON.stringify({ name: name }),
+      }).then(function(r){ return r.json(); }).then(function(d){
+        btn.disabled = false;
+        if (d.ok) {
+          status.innerHTML = '<span class="text-success">✓ saved permanently</span>';
+          input.classList.add('border-success');
+        } else {
+          status.innerHTML = '<span class="text-danger">' + (d.message || 'Save failed') + '</span>';
+        }
+      }).catch(function(err){
+        btn.disabled = false;
+        status.innerHTML = '<span class="text-danger">Network error</span>';
+      });
+    });
+  });
+})();
+</script>
+</body></html>
+""", q=q, rows=rows)
+
+
 @app.route('/admin/fix-names', methods=['GET', 'POST'])
 @role_required(*CAN_USERS)
 def admin_fix_names():
