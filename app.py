@@ -7951,17 +7951,19 @@ def _auto_reanalyze_on_startup():
                 v = str(pv).strip() if pv is not None else ''
                 return v if v else (ev or '')
 
-            # For the name field: NEVER overwrite a good existing name.
-            # Only replace if the stored name is blank, is the placeholder,
-            # or clearly fails our own name-validity check.
+            # For the name field: NEVER overwrite a name a human has saved.
+            # We only overwrite when the stored value is empty or is the
+            # "Please Edit Name" placeholder we set when nothing could be
+            # extracted at parse time. Previously this also dropped names
+            # that failed _looks_like_name() — but that heuristic rejects
+            # legitimate single-word names ("Saha", "Madonna") and let the
+            # AI parse silently replace them with section headings like
+            # "Client Relationship Management" on every app restart. The
+            # human edit wins — full stop.
             existing_name = (applicant['name'] or '').strip()
             new_name      = (parsed.get('name') or '').strip()
-            existing_name_bad = (
-                not existing_name
-                or existing_name == 'Please Edit Name'
-                or not _looks_like_name(existing_name)
-            )
-            if existing_name_bad and new_name:
+            placeholder_names = ('', 'Please Edit Name', 'Unknown', 'N/A', '-')
+            if existing_name in placeholder_names and new_name:
                 name_to_save = new_name
             else:
                 name_to_save = existing_name or new_name or 'Please Edit Name'

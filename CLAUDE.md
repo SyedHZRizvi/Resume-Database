@@ -120,6 +120,15 @@ When adding a new button to the navbar:
     still force a download. Any caller can append `?download=1` to force
     the download path for any format. Staff documents (contracts/IDs/
     visas) remain forced-download regardless of format — see §2.5.
+11. **Human-saved applicant names are sacred** — the
+    `_auto_reanalyze_on_startup()` background task may NEVER overwrite a
+    non-empty applicant name with whatever the AI re-parse returns. It
+    only overwrites when the stored value is empty or one of the
+    placeholder strings (`'Please Edit Name'`, `'Unknown'`, `'N/A'`,
+    `'-'`). Previously the task tested the existing name with
+    `_looks_like_name()` and replaced any single-word name like "Saha"
+    or "Madonna" with a section heading like "Client Relationship
+    Management" extracted by Claude. The human edit wins — full stop.
 
 ### 2.3 Role / permission model
 

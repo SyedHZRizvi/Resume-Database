@@ -233,6 +233,20 @@ def check_resume_download(app_src: str) -> None:
                'Supabase path appends download=1 when forcing attachment')
 
 
+def check_name_preservation(app_src: str) -> None:
+    section('Human-saved applicant names are sacred (CLAUDE.md §2.2 #11)')
+    # The auto-reanalyze loop must use the placeholder-list approach,
+    # NOT the old _looks_like_name() check that overwrote single-word names.
+    must_match(app_src, 'placeholder_names = (',
+               'Auto-reanalyze uses placeholder_names tuple, not _looks_like_name()')
+    must_match(app_src, "'Please Edit Name', 'Unknown', 'N/A', '-'",
+               'placeholder_names covers the known stand-ins')
+    # Make sure the dangerous old pattern is gone
+    must_not_match(app_src,
+                   'not _looks_like_name(existing_name)',
+                   'Auto-reanalyze does NOT call _looks_like_name on existing_name')
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # §9  Permission groups still defined
 # ─────────────────────────────────────────────────────────────────────────────
@@ -563,6 +577,7 @@ def main() -> int:
         check_db_init(app_src)
         check_csrf_exempts(app_src)
         check_resume_download(app_src)
+        check_name_preservation(app_src)
         check_permissions(app_src)
         check_staff_columns(app_src)
         check_staff_documents(app_src)
