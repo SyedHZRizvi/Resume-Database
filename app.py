@@ -5124,6 +5124,14 @@ _NOT_A_NAME_TOKENS = frozenset([
     'introduction', 'career', 'goal', 'goals', 'mission', 'vision',
     'strengths', 'tools', 'technologies', 'technical', 'professional',
     'curriculum', 'vitae', 'resume', 'biography',
+    'reporting', 'reports', 'position', 'role', 'function', 'department',
+    'designation', 'date', 'dob', 'gender', 'nationality', 'marital',
+    'status', 'location', 'city', 'country', 'phone', 'mobile', 'email',
+    'website', 'linkedin', 'github', 'portfolio', 'declaration', 'place',
+    'signature', 'duration', 'tenure', 'expected', 'current', 'previous',
+    'present', 'available', 'notice', 'period', 'salary', 'ctc',
+    'summary', 'description', 'tasks', 'responsibilities', 'duties',
+    'key', 'major', 'minor', 'side', 'main', 'primary', 'secondary',
     # ── Company / legal-entity terms ───────────────────────────────────────
     'inc', 'llc', 'ltd', 'corp', 'corporation', 'company', 'enterprise',
     'group', 'holdings', 'limited', 'gmbh', 'ag', 'sa',
@@ -8068,40 +8076,51 @@ def _extract_name_from_resume_text(text: str, email: str = '') -> str:
         if not _looks_like_real_name(line):
             continue
 
-        score = 0
         words = line.split()
         line_tokens = {_re.sub(r"[^a-z]", '', w.lower()) for w in words}
         line_tokens.discard('')
-
-        # Email-match: strongest signal we have
         overlap = len(line_tokens & email_tokens)
+        is_title_case = all(w[:1].isupper() and w[1:].islower()
+                            for w in words if len(w) > 1)
+
+        # ── HARD GATE: a candidate can only enter the scoring pool if it
+        # has a real positive signal. Without this, single-word section
+        # words like "Reporting" / "Profile" / "Summary" sneak through
+        # purely on Title-Case + position.
+        accept = False
+        if overlap:
+            # Shares a token with the candidate's own email — strong signal.
+            accept = True
+        elif len(words) >= 2 and is_title_case:
+            # Multi-word Title Case at the top of the resume is name-shaped
+            # and unlikely to be a section heading once the blacklist has
+            # filtered out the obvious ones.
+            accept = True
+        # (Multi-word ALL CAPS without email match → reject — usually
+        # a section heading like "WORK EXPERIENCE" / "CORE AREAS")
+        # (Single word without email match → reject — usually a section
+        # heading like "Reporting" / "Profile")
+        if not accept:
+            continue
+
+        score = 0
         if overlap:
             score += 5 * overlap
-
-        # Title Case is more name-like than ALL CAPS
-        if all(w[:1].isupper() and w[1:].islower() for w in words if len(w) > 1):
+        if is_title_case:
             score += 2
-        # Multi-word ALL CAPS is suspicious (often a section heading)
         if len(words) >= 2 and line.isupper():
             score -= 3
-
-        # Position bonus — top of the resume is name territory
         if idx <= 5:
             score += 1
         else:
-            score -= (idx - 5) // 5  # mild penalty as we go further down
+            score -= (idx - 5) // 5
 
         candidates.append((score, idx, line))
 
     if not candidates:
         return ''
-    # Highest score wins; tiebreak by earliest line (lower idx)
     candidates.sort(key=lambda t: (-t[0], t[1]))
     best_score, _, best_line = candidates[0]
-    # Require a positive signal — never accept a candidate purely on
-    # position. If the best score is <= 0, it's just a section heading
-    # that happened to slip past _looks_like_real_name; better to flag
-    # the record for manual review.
     if best_score <= 0:
         return ''
     return best_line
@@ -8121,16 +8140,30 @@ def _claude_name_only(text: str, email: str = '') -> str:
     if not text or not ANTHROPIC_API_KEY:
         return ''
     excerpt = text[:4000]
-    hint = f' The candidate\'s email is "{email}".' if email else ''
+    hint = f' The candidate\'s email is "{email}" — their name almost certainly contains tokens from this email.' if email else ''
     prompt = (
         "You are reading a resume and need to extract ONLY the candidate's "
-        "personal name (e.g. 'Aneesh Saha', 'Sarah Johnson', 'Saha'). "
-        "Names can be one to four words. They are NEVER job titles, "
-        "section headings (e.g. 'CORE AREAS', 'WORK EXPERIENCE', "
-        "'PROFESSIONAL SUMMARY'), company names, or page numbers." + hint +
-        " Return ONLY a JSON object with this exact shape — no prose, no "
+        "personal name (a real human's first/middle/last name).\n\n"
+        "A NAME looks like: 'Aneesh Saha', 'Sarah Johnson', 'Saha', "
+        "'Mohammed Khan', 'María García', 'Jean-Claude Van Damme'.\n\n"
+        "A NAME is NEVER one of these (which often appear at the top of "
+        "resumes and trick lazy parsers):\n"
+        "  - Section headings: 'CORE AREAS', 'WORK EXPERIENCE', "
+        "'PROFESSIONAL SUMMARY', 'OBJECTIVE', 'REPORTING TO', 'PROFILE'\n"
+        "  - Job titles: 'Senior Engineer', 'Client Relationship Management', "
+        "'Business Development Representative'\n"
+        "  - Company names: 'Acme Inc', 'ABC Corp'\n"
+        "  - Page numbers, dates, addresses, phone numbers, emails\n"
+        "  - Single generic words: 'Reporting', 'Profile', 'Summary', "
+        "'Experience', 'Skills', 'Education'\n\n"
+        "Scan the resume and find the actual person's name. It is usually "
+        "(but not always) near the top, often next to or above the contact "
+        "details (email, phone)." + hint +
+        "\n\nReturn ONLY a JSON object with this exact shape — no prose, no "
         'markdown, no explanation:\n'
-        '{"name": "..."}\n\n'
+        '{"name": "Their Full Name"}\n\n'
+        "If you genuinely cannot determine the candidate's name from this "
+        'resume, return {"name": ""}. Do NOT guess.\n\n'
         f"Resume text:\n{excerpt}"
     )
     try:
