@@ -8083,33 +8083,20 @@ def _extract_name_from_resume_text(text: str, email: str = '') -> str:
         is_title_case = all(w[:1].isupper() and w[1:].islower()
                             for w in words if len(w) > 1)
 
-        # ── HARD GATE: a candidate can only enter the scoring pool if it
-        # has a real positive signal. Without this, single-word section
-        # words like "Reporting" / "Profile" / "Summary" sneak through
-        # purely on Title-Case + position.
-        accept = False
-        if overlap:
-            # Shares a token with the candidate's own email — strong signal.
-            accept = True
-        elif len(words) >= 2 and is_title_case:
-            # Multi-word Title Case at the top of the resume is name-shaped
-            # and unlikely to be a section heading once the blacklist has
-            # filtered out the obvious ones.
-            accept = True
-        # (Multi-word ALL CAPS without email match → reject — usually
-        # a section heading like "WORK EXPERIENCE" / "CORE AREAS")
-        # (Single word without email match → reject — usually a section
-        # heading like "Reporting" / "Profile")
-        if not accept:
+        # ── HARD GATE: only accept candidates that share a token with the
+        # candidate's own email. Without this, 2-word Title Case phrases
+        # like "Customer Success" / "Business Development" sneak through
+        # — there are too many of them to maintain a blacklist of.
+        # When no email is available, no automatic acceptance — the row
+        # is flagged for manual review instead.
+        if not overlap:
             continue
 
-        score = 0
-        if overlap:
-            score += 5 * overlap
+        score = 5 * overlap
         if is_title_case:
             score += 2
         if len(words) >= 2 and line.isupper():
-            score -= 3
+            score -= 1   # mild penalty — but email match still wins
         if idx <= 5:
             score += 1
         else:
@@ -8207,13 +8194,36 @@ def _rescue_one_applicant_name(applicant_row) -> tuple[str, str]:
         return (current, 'unchanged')
     parsed_text = applicant_row['parsed_text'] or ''
     email = applicant_row['email'] or ''
+    # Derive the email tokens once for validating both layer outputs.
+    email_tokens = _email_local_tokens(email)
+    if not email_tokens and parsed_text:
+        import re as _re
+        m = _re.search(r'[\w.+\-]+@[\w.\-]+\.\w+', parsed_text)
+        if m:
+            email_tokens = _email_local_tokens(m.group(0))
+
+    def _validates_against_email(candidate_name: str) -> bool:
+        """A candidate name passes when it either (a) shares a token with
+        the candidate's email, OR (b) there's no email at all so we have
+        no way to validate but the name passed _looks_like_real_name."""
+        if not _looks_like_real_name(candidate_name):
+            return False
+        if not email_tokens:
+            return True   # nothing better to check against
+        import re as _re
+        tokens = {_re.sub(r"[^a-z]", '', w.lower()) for w in candidate_name.split()}
+        tokens.discard('')
+        return bool(tokens & email_tokens)
+
     # Layer 1 — local heuristic with email-token signal
     candidate = _extract_name_from_resume_text(parsed_text, email)
-    if candidate:
+    if candidate and _validates_against_email(candidate):
         return (candidate, 'heuristic')
-    # Layer 2 — focused Claude call (only when heuristic returns nothing)
+    # Layer 2 — focused Claude call. Validate the model's answer against
+    # the same email-token check so a hallucinated "Customer Success"
+    # response gets rejected rather than written to the DB.
     candidate = _claude_name_only(parsed_text, email)
-    if candidate:
+    if candidate and _validates_against_email(candidate):
         return (candidate, 'claude')
     return ('Please Edit Name', 'placeholder')
 
@@ -8293,6 +8303,32 @@ def _run_name_rescue_pass(silent: bool = True) -> dict:
     return stats
 
 
+@app.route('/api/applicants/<int:applicant_id>/quick-rename', methods=['POST'])
+@role_required(*CAN_USERS)
+def api_applicants_quick_rename(applicant_id):
+    """Inline-edit hook used by the name-rescue report. POST {name: '...'}
+    and we update the applicants.name column. Per CLAUDE.md §2.2 rule #11
+    this manual edit is preserved by all background passes from now on."""
+    body = request.get_json(silent=True) or {}
+    new_name = (body.get('name') or '').strip()
+    if not new_name:
+        return jsonify({'ok': False, 'message': 'Name cannot be empty.'}), 400
+    if len(new_name) > 120:
+        return jsonify({'ok': False, 'message': 'Name is too long.'}), 400
+    with get_db() as conn:
+        row = conn.execute('SELECT id, name FROM applicants WHERE id=?',
+                           (applicant_id,)).fetchone()
+        if not row:
+            return jsonify({'ok': False, 'message': 'Applicant not found.'}), 404
+        old_name = row['name']
+        conn.execute('UPDATE applicants SET name=? WHERE id=?',
+                     (new_name, applicant_id))
+        conn.commit()
+    log_action('NAME QUICK-EDIT', f'#{applicant_id}',
+               f'{old_name!r} → {new_name!r}')
+    return jsonify({'ok': True, 'name': new_name})
+
+
 @app.route('/admin/fix-names', methods=['GET', 'POST'])
 @role_required(*CAN_USERS)
 def admin_fix_names():
@@ -8302,6 +8338,24 @@ def admin_fix_names():
     want to wait for the next background sweep on app restart.
     """
     stats = _run_name_rescue_pass(silent=False)
+    # Pull a short parsed-text excerpt for every applicant whose name was
+    # changed, so HR can see exactly what the system was working with when
+    # they decide what to type into the inline edit boxes.
+    excerpts = {}
+    ids = [c['id'] for c in stats['changes']]
+    if ids:
+        with get_db() as conn:
+            placeholders = ','.join('?' * len(ids))
+            rows = conn.execute(
+                f'SELECT id, email, parsed_text FROM applicants '
+                f'WHERE id IN ({placeholders})', ids
+            ).fetchall()
+        for r in rows:
+            txt = (r['parsed_text'] or '').strip()
+            excerpts[r['id']] = {
+                'email':  r['email'] or '',
+                'snippet': '\n'.join(txt.splitlines()[:15])[:800],
+            }
     log_action('NAME RESCUE',
                f"heuristic={stats['rescued_heuristic']} "
                f"claude={stats['rescued_claude']} "
@@ -8334,29 +8388,99 @@ def admin_fix_names():
     </div>
   </div>
   {% if stats.changes %}
-    <h6 class="fw-bold mb-2">Changes applied</h6>
-    <ul class="list-group mb-4">
+    <h6 class="fw-bold mb-2">
+      Review what the system did
+      <span class="text-muted fw-normal small">— if anything looks wrong, type the correct name and click Save. Your edit is permanent.</span>
+    </h6>
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <div class="vstack gap-3 mb-4">
       {% for c in stats.changes %}
-        <li class="list-group-item d-flex justify-content-between align-items-center">
-          <div>
-            <div><strong>#{{ c.id }}</strong></div>
-            <div class="small text-muted"><s>{{ c.from }}</s> &rarr;
-              <strong class="text-success">{{ c.to }}</strong></div>
+        {% set ex = excerpts.get(c.id, {}) %}
+        <div class="card border-0 shadow-sm">
+          <div class="card-body p-3">
+            <div class="d-flex justify-content-between align-items-start mb-2">
+              <div>
+                <strong>Applicant #{{ c.id }}</strong>
+                <span class="text-muted small">·
+                  was <s>{{ c.from }}</s> · now
+                  <strong class="text-success">{{ c.to }}</strong>
+                </span>
+              </div>
+              <span class="badge bg-{% if c.reason == 'heuristic' %}success{% elif c.reason == 'claude' %}primary{% else %}warning text-dark{% endif %}">
+                {{ c.reason }}
+              </span>
+            </div>
+            <form class="qr-form d-flex gap-2 align-items-center"
+                  data-applicant-id="{{ c.id }}">
+              <input type="text" class="form-control form-control-sm"
+                     value="{{ c.to }}" maxlength="120"
+                     placeholder="Type the correct name…" />
+              <button type="submit" class="btn btn-success btn-sm flex-shrink-0">
+                <i class="bi bi-check2"></i> Save
+              </button>
+              <span class="qr-status small text-muted"></span>
+            </form>
+            {% if ex.email or ex.snippet %}
+              <details class="mt-2">
+                <summary class="text-muted small" style="cursor:pointer">
+                  <i class="bi bi-info-circle me-1"></i>Show what the system saw
+                </summary>
+                <div class="small text-muted mt-2">
+                  <div><strong>Stored email:</strong>
+                    {{ ex.email or '(none on file — this is why detection failed)' }}
+                  </div>
+                  <pre class="mb-0 mt-1 p-2 rounded bg-light" style="white-space:pre-wrap; font-size:0.78rem; max-height:200px; overflow:auto">{{ ex.snippet or '(no resume text on file)' }}</pre>
+                </div>
+              </details>
+            {% endif %}
           </div>
-          <span class="badge bg-{% if c.reason == 'heuristic' %}success{% elif c.reason == 'claude' %}primary{% else %}warning text-dark{% endif %}">
-            {{ c.reason }}
-          </span>
-        </li>
+        </div>
       {% endfor %}
-    </ul>
+    </div>
   {% else %}
     <p class="text-muted">No applicant names needed fixing.</p>
   {% endif %}
   <a href="{{ url_for('index') }}" class="btn btn-primary">
     <i class="bi bi-arrow-left me-1"></i>Back to Applicants
   </a>
-</div></body></html>
-""", stats=stats)
+</div>
+<script>
+(function(){
+  var token = document.querySelector('meta[name="csrf-token"]').content;
+  document.querySelectorAll('.qr-form').forEach(function(form){
+    form.addEventListener('submit', function(e){
+      e.preventDefault();
+      var id     = form.dataset.applicantId;
+      var input  = form.querySelector('input[type=text]');
+      var btn    = form.querySelector('button');
+      var status = form.querySelector('.qr-status');
+      var name   = (input.value || '').trim();
+      if (!name) { status.textContent = 'Enter a name.'; return; }
+      btn.disabled = true; status.textContent = 'Saving…';
+      fetch('/api/applicants/' + id + '/quick-rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json',
+                   'X-CSRFToken': token,
+                   'Accept': 'application/json' },
+        body: JSON.stringify({ name: name }),
+      }).then(function(r){ return r.json(); }).then(function(d){
+        btn.disabled = false;
+        if (d.ok) {
+          status.innerHTML = '<span class="text-success">✓ saved</span>';
+          input.classList.add('border-success');
+        } else {
+          status.innerHTML = '<span class="text-danger">' + (d.message || 'Save failed') + '</span>';
+        }
+      }).catch(function(err){
+        btn.disabled = false;
+        status.innerHTML = '<span class="text-danger">Network error</span>';
+      });
+    });
+  });
+})();
+</script>
+</body></html>
+""", stats=stats, excerpts=excerpts)
 
 
 def _backfill_file_hashes():
