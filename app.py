@@ -5326,6 +5326,42 @@ def staff_delete(staff_id):
 
 @app.route('/staff/bulk-assign', methods=['POST'])
 @role_required(*CAN_STAFF)
+def _append_staff_note(existing: str, new_note: str) -> str:
+    """Append a timestamped + author-stamped note to an existing notes blob.
+    Used by both the inline quick-add endpoint and the bulk-assign route."""
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
+    author    = session.get('username', 'system') if REQUIRE_LOGIN else 'system'
+    block     = f'[{timestamp} by {author}]\n{new_note}'
+    existing  = (existing or '').rstrip()
+    return (existing + '\n\n' + block) if existing else block
+
+
+@app.route('/api/staff/<int:staff_id>/notes', methods=['POST'])
+@role_required(*CAN_STAFF)
+def api_staff_add_note(staff_id):
+    """Inline quick-add hook used by the staff-directory Notes column.
+    POST {note: '...'} → appends a timestamped block to staff.notes and
+    returns the updated combined string for in-place rendering."""
+    body = request.get_json(silent=True) or {}
+    new_note = (body.get('note') or '').strip()
+    if not new_note:
+        return jsonify({'ok': False, 'message': 'Note cannot be empty.'}), 400
+    if len(new_note) > 2000:
+        return jsonify({'ok': False, 'message': 'Note is too long (max 2000 chars).'}), 400
+    with get_db() as conn:
+        row = conn.execute(
+            'SELECT name, notes FROM staff WHERE id=?', (staff_id,)
+        ).fetchone()
+        if not row:
+            return jsonify({'ok': False, 'message': 'Staff not found.'}), 404
+        combined = _append_staff_note(row['notes'] or '', new_note)
+        conn.execute('UPDATE staff SET notes=? WHERE id=?',
+                     (combined, staff_id))
+        conn.commit()
+    log_action('STAFF NOTE QUICK-ADD', row['name'], new_note[:120])
+    return jsonify({'ok': True, 'notes': combined})
+
+
 def staff_bulk_assign():
     f = request.form
     apply_to        = (f.get('apply_to') or 'selected').strip()
@@ -5370,10 +5406,6 @@ def staff_bulk_assign():
         flash('No matching staff found.', 'warning')
         return redirect(url_for('staff_list'))
 
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
-    author    = session.get('username', 'system') if REQUIRE_LOGIN else 'system'
-    note_block = f'[{timestamp} by {author}]\n{append_note}' if append_note else ''
-
     updated = 0
     with get_db() as conn:
         for s in rows:
@@ -5389,11 +5421,13 @@ def staff_bulk_assign():
                     new_property = _clean_property_list(combined)
                 row_changed = True
 
-            if note_block:
+            if append_note:
                 if mode_note == 'replace':
-                    new_notes = note_block
+                    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
+                    author    = session.get('username', 'system') if REQUIRE_LOGIN else 'system'
+                    new_notes = f'[{timestamp} by {author}]\n{append_note}'
                 else:
-                    new_notes = (new_notes.rstrip() + '\n\n' + note_block).lstrip()
+                    new_notes = _append_staff_note(new_notes, append_note)
                 row_changed = True
 
             if row_changed:
