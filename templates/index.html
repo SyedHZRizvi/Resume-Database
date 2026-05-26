@@ -78,6 +78,13 @@
     </a>
     <div class="ms-auto d-flex align-items-center gap-2">
       <a href="{{ url_for('match_job') }}" class="btn btn-outline-light tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Find Best Match"><i class="bi bi-stars"></i></a>
+      {% if can_add %}
+      <button type="button" class="btn btn-outline-light tc-nav-icon"
+              data-bs-toggle="modal" data-bs-target="#indeedSearchModal"
+              title="Search Indeed for resumes by JD">
+        <i class="bi bi-search-heart"></i>
+      </button>
+      {% endif %}
       <a href="{{ url_for('staff_list') }}" class="btn btn-outline-light tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Staff Directory"><i class="bi bi-person-badge-fill"></i></a>
       {% if can_staff %}
       <a href="{{ url_for('supplies_list') }}" class="btn btn-outline-light tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Office Supplies"><i class="bi bi-boxes"></i></a>
@@ -904,5 +911,179 @@ document.querySelectorAll('#filterForm input, #filterForm select').forEach(el =>
     });
   })();
 </script>
+
+<!-- ── Indeed Resume Search by JD modal ───────────────────────────────────── -->
+{% if can_add %}
+<div class="modal fade" id="indeedSearchModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered modal-lg">
+    <div class="modal-content shadow">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title fw-bold">
+          <i class="bi bi-search-heart text-primary me-2"></i>
+          Find Resumes on Indeed by Job Description
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body pt-3">
+        <div class="alert alert-info border-0 small mb-3" style="background:#eef6ff">
+          <i class="bi bi-info-circle me-1"></i>
+          Paste a job description below. The system extracts the right keywords
+          and opens <strong>Indeed Resume Search</strong> in a new tab,
+          pre-filled with the best query. You'll need to be signed in to your
+          Indeed employer account. Once you see promising candidates, click the
+          existing Indeed bookmarklet on each one to import them — they'll land
+          in the applicant database tagged <em>"From Indeed"</em>.
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label fw-semibold small">
+            <i class="bi bi-file-text me-1"></i>Job Description / Requirements
+            <span class="text-danger">*</span>
+          </label>
+          <textarea id="indeedJdInput" class="form-control" rows="6"
+                    placeholder="Paste the JD here — title, responsibilities, required skills, experience, location, anything that helps describe the candidate you're looking for…"></textarea>
+        </div>
+
+        <div class="row g-2 mb-3">
+          <div class="col-12 col-md-6">
+            <label class="form-label fw-semibold small">
+              <i class="bi bi-geo-alt me-1"></i>Location <span class="text-muted">(optional override)</span>
+            </label>
+            <input type="text" id="indeedLocationInput" class="form-control form-control-sm"
+                   placeholder="e.g. London / Remote / United Kingdom">
+          </div>
+          <div class="col-12 col-md-6">
+            <label class="form-label fw-semibold small">
+              <i class="bi bi-mortarboard me-1"></i>Minimum Years of Experience
+              <span class="text-muted">(optional)</span>
+            </label>
+            <input type="number" id="indeedYearsInput" class="form-control form-control-sm"
+                   min="0" max="50" placeholder="e.g. 3">
+          </div>
+        </div>
+
+        <div class="d-flex gap-2 align-items-center">
+          <button type="button" id="indeedAnalyzeBtn" class="btn btn-primary">
+            <i class="bi bi-stars me-1"></i>Analyze &amp; Build Search
+          </button>
+          <span id="indeedStatus" class="small text-muted"></span>
+        </div>
+
+        <!-- Results panel (hidden until analyze succeeds) -->
+        <div id="indeedResultsPanel" class="mt-4 d-none">
+          <hr>
+          <div class="card border-0 shadow-sm">
+            <div class="card-body p-3">
+              <h6 class="fw-semibold mb-2">
+                <i class="bi bi-check2-circle text-success me-1"></i>Search built
+              </h6>
+              <div class="mb-2 small">
+                <strong>Job title:</strong> <span id="resJobTitle"></span>
+              </div>
+              <div class="mb-2 small">
+                <strong>Top skills:</strong>
+                <div id="resSkills" class="d-flex flex-wrap gap-1 mt-1"></div>
+              </div>
+              <div class="mb-2 small">
+                <strong>Min years:</strong> <span id="resYears"></span>
+                <span class="ms-3"><strong>Location:</strong> <span id="resLocation"></span></span>
+              </div>
+              <div class="text-muted small fst-italic" id="resSummary"></div>
+              <hr class="my-3">
+              <div class="d-flex gap-2 flex-wrap align-items-center">
+                <a id="indeedOpenLink" href="#" target="_blank" rel="noopener"
+                   class="btn btn-success">
+                  <i class="bi bi-box-arrow-up-right me-1"></i>Open Indeed Resume Search
+                </a>
+                <a href="{{ url_for('admin_indeed_bookmarklet') }}" target="_blank" rel="noopener"
+                   class="btn btn-outline-secondary">
+                  <i class="bi bi-bookmark-star me-1"></i>Set up / view the bookmarklet
+                </a>
+              </div>
+              <div class="form-text mt-2">
+                Tip: on each Indeed candidate page that looks promising, click
+                the saved bookmarklet — it imports them straight into your
+                applicant list, tagged as "From Indeed".
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var token = document.querySelector('meta[name="csrf-token"]').content;
+  var jd       = document.getElementById('indeedJdInput');
+  var loc      = document.getElementById('indeedLocationInput');
+  var years    = document.getElementById('indeedYearsInput');
+  var btn      = document.getElementById('indeedAnalyzeBtn');
+  var status   = document.getElementById('indeedStatus');
+  var panel    = document.getElementById('indeedResultsPanel');
+  var openLink = document.getElementById('indeedOpenLink');
+
+  if (!btn) return;
+  btn.addEventListener('click', function(){
+    var text = (jd.value || '').trim();
+    if (!text) {
+      status.innerHTML = '<span class="text-warning">Paste a job description first.</span>';
+      return;
+    }
+    btn.disabled = true;
+    panel.classList.add('d-none');
+    status.innerHTML = '<span class="text-muted"><span class="spinner-border spinner-border-sm me-1"></span>Analyzing the JD…</span>';
+    fetch('/api/ai/indeed-search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json',
+                 'X-CSRFToken': token,
+                 'Accept': 'application/json' },
+      body: JSON.stringify({ jd: text,
+                             location: (loc.value || '').trim(),
+                             min_years: years.value || null }),
+    }).then(function(r){
+      var statusCode = r.status;
+      return r.json().catch(function(){ return null; }).then(function(d){
+        return { code: statusCode, data: d };
+      });
+    }).then(function(res){
+      btn.disabled = false;
+      var d = res.data;
+      if (res.code !== 200 || !d || d.ok !== true) {
+        var msg;
+        if (res.code === 429)      msg = 'You have used today\'s AI Indeed-search limit. Please try again later.';
+        else if (res.code === 503) msg = 'AI is not configured on this server.';
+        else if (d && d.message)   msg = d.message;
+        else                       msg = 'Could not analyze the JD. Please try again.';
+        status.innerHTML = '<span class="text-danger">' + msg + '</span>';
+        return;
+      }
+      status.innerHTML = '<span class="text-success">✓ Done — review the search below.</span>';
+      document.getElementById('resJobTitle').textContent = d.job_title || '(not specified)';
+      document.getElementById('resYears').textContent    = (d.years || 0) + '+';
+      document.getElementById('resLocation').textContent = d.location || '(any)';
+      document.getElementById('resSummary').textContent  = d.summary || '';
+      var skillsEl = document.getElementById('resSkills');
+      skillsEl.innerHTML = '';
+      (d.skills || []).forEach(function(s){
+        var chip = document.createElement('span');
+        chip.className = 'tc-skill-chip';
+        chip.textContent = s;
+        skillsEl.appendChild(chip);
+      });
+      openLink.href = d.url;
+      panel.classList.remove('d-none');
+    }).catch(function(err){
+      btn.disabled = false;
+      status.innerHTML = '<span class="text-danger">Network error — please try again.</span>';
+    });
+  });
+})();
+</script>
+{% endif %}
 </body>
 </html>

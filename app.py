@@ -5041,6 +5041,147 @@ def api_ai_interview_questions():
     })
 
 
+# ─── AI Indeed-search builder ─────────────────────────────────────────────────
+# Given a job description / requirements blob, Claude extracts the most
+# searchable signals (title, top skills, years of experience, optional
+# location) and we construct a deep-link into Indeed Resume Search with
+# those parameters pre-filled. The user then browses the results on Indeed
+# (their employer account is logged in) and uses the existing
+# /api/indeed/import bookmarklet to one-click import each promising
+# candidate. We DON'T scrape Indeed — that would violate their ToS and
+# get the account banned. This route only builds a better search URL.
+@app.route('/api/ai/indeed-search', methods=['POST'])
+@role_required(*CAN_ADD)
+@limiter.limit('30/hour;200/day', key_func=_ai_per_user_key)
+def api_ai_indeed_search():
+    if not ANTHROPIC_API_KEY:
+        return jsonify({
+            'ok': False,
+            'message': ('AI keyword extraction is disabled — no Anthropic API '
+                        'key is configured on this server.'),
+        }), 503
+    body = request.get_json(silent=True) or {}
+    jd            = (body.get('jd') or '').strip()
+    user_location = (body.get('location') or '').strip()[:80]
+    min_years     = body.get('min_years')
+    if not jd:
+        return jsonify({'ok': False,
+                        'message': 'Paste a job description first.'}), 400
+    if len(jd) > 8000:
+        jd = jd[:8000]
+    try:
+        min_years = int(min_years) if min_years not in (None, '', 'null') else None
+        if min_years is not None and (min_years < 0 or min_years > 50):
+            min_years = None
+    except (TypeError, ValueError):
+        min_years = None
+
+    prompt = (
+        "You are a recruiter assistant. Read this job description and "
+        "extract the keywords that will produce the best Indeed Resume "
+        "Search. Return ONLY a JSON object with these exact keys:\n"
+        "  job_title    — string, the canonical role title to search for "
+        "(e.g. 'Senior Software Engineer', 'HR Manager')\n"
+        "  skills       — array of 5–10 short keyword/skill strings most "
+        "important for this role (e.g. ['Python', 'AWS', 'team lead'])\n"
+        "  years        — integer minimum years of experience implied by "
+        "the JD (0 if not stated)\n"
+        "  location     — string, city/region if mentioned, else ''\n"
+        "  summary      — one-sentence plain-English summary of what kind "
+        "of candidate to look for\n\n"
+        "Return ONLY the JSON — no markdown, no prose.\n\n"
+        f"Job description:\n{jd}"
+    )
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        message = client.messages.create(
+            model='claude-haiku-4-5-20251001',
+            max_tokens=1200,
+            messages=[{'role': 'user', 'content': prompt}],
+        )
+    except Exception as e:
+        log_action('AI INDEED SEARCH', '(prompt)',
+                   f'API error: {type(e).__name__}: {str(e)[:200]}')
+        return jsonify({
+            'ok': False,
+            'message': 'The AI service is temporarily unavailable. Please try again.',
+        }), 502
+
+    raw = ''
+    try:
+        raw = (message.content[0].text or '').strip()
+    except (AttributeError, IndexError):
+        pass
+    # Strip code fences if Claude returned a fenced block
+    if raw.startswith('```'):
+        raw = raw.strip('`').lstrip('json').strip()
+    try:
+        import json as _json
+        parsed = _json.loads(raw)
+    except Exception:
+        return jsonify({
+            'ok': False,
+            'message': 'AI response was unparseable, please try again.',
+        }), 502
+    if not isinstance(parsed, dict):
+        return jsonify({'ok': False, 'message': 'AI response malformed.'}), 502
+
+    job_title = str(parsed.get('job_title') or '').strip()[:120]
+    raw_skills = parsed.get('skills') or []
+    if not isinstance(raw_skills, list):
+        raw_skills = []
+    skills = [str(s).strip() for s in raw_skills if str(s or '').strip()][:10]
+    try:
+        years = int(parsed.get('years') or 0)
+        if years < 0 or years > 50:
+            years = 0
+    except (TypeError, ValueError):
+        years = 0
+    ai_location = str(parsed.get('location') or '').strip()[:80]
+    summary     = str(parsed.get('summary') or '').strip()[:300]
+
+    # Caller's explicit min_years / location override the AI's guess.
+    if min_years is not None:
+        years = min_years
+    location = user_location or ai_location
+
+    # Build the Indeed Resume Search URL. The search query goes in `q`
+    # (with quotes around multi-word skills so Indeed treats them as
+    # phrases). `l` is the location field. Filters like minimum years of
+    # experience are exposed via `&radius=` / `&expLvl=` query params in
+    # Indeed's UI; we leave those to the user since their available
+    # filter set varies by subscription tier.
+    from urllib.parse import quote_plus
+    q_parts = []
+    if job_title:
+        q_parts.append(f'"{job_title}"')
+    for s in skills:
+        if ' ' in s:
+            q_parts.append(f'"{s}"')
+        else:
+            q_parts.append(s)
+    q = ' '.join(q_parts).strip()
+    url = (
+        'https://resumes.indeed.com/search?'
+        f'q={quote_plus(q)}'
+        + (f'&l={quote_plus(location)}' if location else '')
+    )
+
+    log_action('AI INDEED SEARCH', job_title or '(no title)',
+               f'skills={skills!r} years={years} location={location!r}')
+    return jsonify({
+        'ok': True,
+        'url':       url,
+        'job_title': job_title,
+        'skills':    skills,
+        'years':     years,
+        'location':  location,
+        'summary':   summary,
+    })
+
+
 @app.route('/open-config', methods=['POST'])
 @role_required(*CAN_USERS)
 def open_config():
