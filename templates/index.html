@@ -80,8 +80,9 @@
       <a href="{{ url_for('match_job') }}" class="btn btn-outline-light tc-nav-icon" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Find Best Match"><i class="bi bi-stars"></i></a>
       {% if can_add %}
       <button type="button" class="btn btn-outline-light tc-nav-icon"
-              data-bs-toggle="modal" data-bs-target="#indeedSearchModal"
-              title="Search Indeed for resumes by JD">
+              data-bs-toggle="tooltip" data-bs-placement="bottom"
+              title="Search Indeed for resumes by JD"
+              onclick="new bootstrap.Modal(document.getElementById('indeedSearchModal')).show()">
         <i class="bi bi-search-heart"></i>
       </button>
       {% endif %}
