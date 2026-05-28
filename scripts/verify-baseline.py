@@ -182,7 +182,9 @@ def check_default_admin(app_src: str) -> None:
 def check_db_init(app_src: str) -> None:
     section('Database init — RLS + audit-log trigger')
     rls_tables = ('applicants', 'users', 'audit_log',
-                  'interviews', 'staff', 'indeed_poll_status')
+                  'interviews', 'staff', 'indeed_poll_status',
+                  'staff_documents', 'supplies', 'supply_movements',
+                  'duplicate_dismissals')
     rls_tuple_re = re.search(r"_rls_tables\s*=\s*\(([^)]+)\)", app_src)
     if not rls_tuple_re:
         fail('_rls_tables tuple missing from init_db()')
@@ -195,6 +197,18 @@ def check_db_init(app_src: str) -> None:
                 fail(f'RLS missing for `{t}`')
     must_match(app_src, 'ENABLE ROW LEVEL SECURITY',
                'ENABLE ROW LEVEL SECURITY ALTER statement present')
+    # Explicit "deny anon/authenticated" policy on every RLS-enabled table
+    # — required to clear the Supabase advisor's "RLS Enabled No Policy"
+    # error. The policy is restrictive USING (false) WITH CHECK (false);
+    # service_role still bypasses RLS so the app is unaffected.
+    must_match(app_src, '"deny_anon_authenticated"',
+               'deny_anon_authenticated policy name present')
+    must_match(app_src, 'TO anon, authenticated',
+               'Policy targets the anon + authenticated REST roles')
+    must_match(app_src, 'USING (false) WITH CHECK (false)',
+               'Policy is fully restrictive')
+    must_match(app_src, 'DROP POLICY IF EXISTS',
+               'Idempotent: DROP POLICY IF EXISTS before CREATE')
     must_match(app_src, 'reject_audit_log_change',
                'Audit-log trigger function defined')
     must_match(app_src, 'BEFORE UPDATE OR DELETE ON audit_log',

@@ -81,9 +81,17 @@ When adding a new button to the navbar:
 
 ### 2.2 Security baseline — do not weaken any of these
 
-1. **RLS enabled** on all 6 public tables (applicants, users, audit_log,
-   interviews, staff, indeed_poll_status). The migration runs in
-   `init_db()` and is idempotent.
+1. **RLS enabled** on every public table the app creates: applicants,
+   users, audit_log, interviews, staff, indeed_poll_status,
+   staff_documents, supplies, supply_movements, duplicate_dismissals.
+   Each table additionally carries a `"deny_anon_authenticated"` policy
+   (restrictive, USING(false) + WITH CHECK(false)) so the Supabase
+   advisor's "RLS Enabled No Policy" linter stays silent. `service_role`
+   has BYPASSRLS in Supabase by default, so the Flask backend is
+   unaffected. The migration runs in `init_db()` and is idempotent
+   (uses DROP POLICY IF EXISTS + CREATE POLICY). **When you add a new
+   table, add it to the `_rls_tables` tuple in the same commit** —
+   otherwise it will drift back into the advisor.
 2. **CSRF protection** is on every state-changing route via `flask-wtf`'s
    `CSRFProtect`. **Every `<form method="POST">` must contain
    `{{ csrf_token() }}`** as a hidden input. Every `fetch()` call to a

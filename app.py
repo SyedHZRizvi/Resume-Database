@@ -767,16 +767,50 @@ def init_db():
         # Supabase exposes every table in `public` through PostgREST. Without
         # RLS, anyone holding the anon API key could read these tables from a
         # browser. Our Flask app connects as the table owner, which bypasses
-        # RLS, so enabling it is safe — anon/authenticated REST calls are
-        # denied (no policies), service-role + owner connections keep working.
+        # RLS, so enabling it is safe.
+        #
+        # The Supabase advisor distinguishes two failure modes:
+        #   • "RLS Disabled in Public"      — RLS isn't even on
+        #   • "RLS Enabled No Policy"        — RLS is on but no policy declared
+        #
+        # We satisfy BOTH by (a) enabling RLS on every table in this schema
+        # AND (b) creating an explicit "deny_anon_authenticated" policy that
+        # denies all CRUD to the anon and authenticated REST roles. The
+        # service_role used by our Flask backend has BYPASSRLS set in
+        # Supabase by default, so the app keeps working unchanged.
         if _db.dialect() == 'postgres':
-            _rls_tables = ('applicants', 'users', 'audit_log',
-                           'interviews', 'staff', 'indeed_poll_status')
+            _rls_tables = (
+                'applicants', 'users', 'audit_log', 'interviews', 'staff',
+                'indeed_poll_status',
+                # Tables added after the initial RLS rollout — must also be
+                # locked down so they don't drift back into the advisor.
+                'staff_documents', 'supplies', 'supply_movements',
+                'duplicate_dismissals',
+            )
             for _t in _rls_tables:
                 try:
                     conn.execute(f'ALTER TABLE {_t} ENABLE ROW LEVEL SECURITY')
                 except Exception as _e:
                     print(f'   [rls] could not enable on {_t}: {_e}')
+                # Explicit deny-anon policy. CREATE POLICY has no IF NOT
+                # EXISTS form in older Postgres, so we DROP-then-CREATE for
+                # idempotency. The policy is restrictive: anon and
+                # authenticated REST callers can perform NO operation;
+                # service_role bypasses RLS so the app is unaffected.
+                try:
+                    conn.execute(
+                        f'DROP POLICY IF EXISTS '
+                        f'"deny_anon_authenticated" ON public.{_t}'
+                    )
+                    conn.execute(
+                        f'CREATE POLICY "deny_anon_authenticated" '
+                        f'ON public.{_t} '
+                        f'AS RESTRICTIVE FOR ALL '
+                        f'TO anon, authenticated '
+                        f'USING (false) WITH CHECK (false)'
+                    )
+                except Exception as _e:
+                    print(f'   [rls] could not install deny policy on {_t}: {_e}')
             conn.commit()
 
             # ── Audit log tamper protection ────────────────────────────────
