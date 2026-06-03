@@ -175,7 +175,7 @@
                     <!-- Edit User (name + role) -->
                     <button type="button" class="btn btn-sm btn-outline-primary"
                             title="Edit User"
-                            onclick="showEditModal({{ u.id }}, '{{ u.username | e }}', '{{ (u.full_name or '') | e }}', '{{ u.role }}', {{ 'true' if u.id == session.user_id else 'false' }})">
+                            onclick="showEditModal({{ u.id }}, {{ u.username|tojson }}, {{ (u.full_name or '')|tojson }}, {{ u.role|tojson }}, {{ 'true' if u.id == session.user_id else 'false' }})">
                       <i class="bi bi-pencil-square"></i>
                     </button>
 

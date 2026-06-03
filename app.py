@@ -1815,6 +1815,13 @@ def change_password():
             user = conn.execute('SELECT * FROM users WHERE id=?',
                                 (session['user_id'],)).fetchone()
 
+        # Guard: if an admin deleted this account while the session was
+        # still live, user will be None — clear the session and redirect.
+        if not user:
+            session.clear()
+            flash('Your account no longer exists. Please sign in again.', 'error')
+            return redirect(url_for('login'))
+
         # For forced changes the user already authenticated via login,
         # so we skip re-checking the current password.
         current_ok = is_forced or check_password_hash(user['password_hash'], current_pw)
@@ -1885,7 +1892,7 @@ def check_duplicate():
     email      = (data.get('email')     or '').strip().lower()
     phone      = (data.get('phone')     or '').strip()
     file_hash  = (data.get('file_hash') or '').strip()
-    exclude_id = data.get('exclude_id')   # int or None — skip current record on edits
+    exclude_id = _safe_int(data.get('exclude_id'), 0) or None  # int or None — skip current record on edits
 
     result = {'hash_match': None, 'contact_matches': []}
 
@@ -1924,7 +1931,7 @@ def check_duplicate():
                 )
                 if exclude_id:
                     q += ' AND id != ?'
-                    params.append(int(exclude_id))
+                    params.append(exclude_id)   # already _safe_int'd above
                 rows = conn.execute(q, params).fetchall()
                 result['contact_matches'] = [
                     {
@@ -8760,7 +8767,7 @@ def admin_find_applicant():
   {% endif %}
 
   <hr class="my-4">
-  <a href="{{ url_for('index') }}" class="btn btn-link">
+  <a href="{{ url_for('index') }}" class="btn btn-outline-primary">
     <i class="bi bi-arrow-left me-1"></i>Back to Applicants
   </a>
 </div>

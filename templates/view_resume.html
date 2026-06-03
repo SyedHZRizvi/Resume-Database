@@ -99,7 +99,7 @@
       <div class="card border-0 shadow-sm mb-4">
         <div class="card-body text-center py-5">
           <div class="profile-avatar mx-auto mb-3">
-            {{ applicant.name[0].upper() }}
+            {{ (applicant.name or '?')[0]|upper }}
           </div>
           <h3 class="fw-bold mb-1">{{ applicant.name }}</h3>
           <p class="text-primary fw-semibold mb-3">{{ applicant.specialty }}</p>
