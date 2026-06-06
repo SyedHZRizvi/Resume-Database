@@ -239,6 +239,18 @@ export default function Careers() {
                 </div>
               )}
 
+              <p className="text-xs text-slate-400 leading-relaxed mt-2">
+                By submitting this form you consent to TransCrypts collecting and
+                securely storing your personal information (name, email, phone, and
+                resume) for recruitment purposes only. Data is reviewed solely by
+                authorised HR staff and is not shared with third parties. To request
+                access to or deletion of your data, email{" "}
+                <a href="mailto:hr@transcrypts.com"
+                   className="text-emerald-600 hover:underline">
+                  hr@transcrypts.com
+                </a>.
+              </p>
+
             </form>
           </CardContent>
         </Card>

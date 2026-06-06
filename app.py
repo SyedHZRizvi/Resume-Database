@@ -113,6 +113,7 @@ OFFICE_ADDRESS       = _cfg('OFFICE_ADDRESS',        '160 Front Street West, Tor
 OFFICE_FLOOR_ROOM    = _cfg('OFFICE_FLOOR_ROOM',     'Office 1820, 18th Floor')
 OFFICE_CONTACT_NAME  = _cfg('OFFICE_CONTACT_NAME',  'Reception')
 OFFICE_CONTACT_PHONE = _cfg('OFFICE_CONTACT_PHONE', '')
+OFFICE_TIMEZONE      = _cfg('OFFICE_TIMEZONE',      'America/Toronto')  # IANA tz for calendar invites
 
 
 # ── Indeed inbox ingestion (IMAP) ─────────────────────────────────────────
@@ -3121,14 +3122,14 @@ def _generate_ics(candidate_name, position, interview_date, interview_time,
     creds          = _email_credentials()
     organizer_addr = creds.get('from') or creds.get('username') or 'hr@transcrypts.com'
 
-    TZID = "America/Toronto"
+    TZID = OFFICE_TIMEZONE
     return (
         "BEGIN:VCALENDAR\r\n"
         "VERSION:2.0\r\n"
         "PRODID:-//TransCrypts//Resume Database//EN\r\n"
         "METHOD:REQUEST\r\n"
         "CALSCALE:GREGORIAN\r\n"
-        # ── Timezone definition (Eastern Time / America/Toronto) ──────────────
+        # ── Timezone definition (uses OFFICE_TIMEZONE from config) ───────────
         "BEGIN:VTIMEZONE\r\n"
         f"TZID:{TZID}\r\n"
         "BEGIN:STANDARD\r\n"
@@ -3521,9 +3522,8 @@ def _candidate_email_html(applicant, interview_date, interview_time,
           &#128694; When You Arrive
         </h3>
         <p style="margin:0 0 8px">
-          Upon arrival, proceed directly to the <strong>elevators</strong> in the
-          lobby — take them up to the <strong>18th Floor</strong> and go to
-          <strong>Office 1820</strong>. There is no need to check in at the front desk.
+          Upon arrival, proceed to <strong>{OFFICE_FLOOR_ROOM}</strong>.
+          There is no need to check in at the front desk.
         </p>
         <p style="margin:0 0 8px">
           Please allow an extra 10–15 minutes for your journey and building entry.
@@ -3535,46 +3535,20 @@ def _candidate_email_html(applicant, interview_date, interview_time,
         </p>
 
         <h3 style="color:#1a5c3e;font-size:16px;margin:0 0 12px">
-          &#128663; Getting Here — By Car
+          &#128205; Getting Here
         </h3>
         <p style="margin:0 0 8px">
-          Our office is located in downtown Toronto's financial district near
-          <strong>Front Street &amp; Bay Street</strong>.
+          Our office address is: <strong>{OFFICE_ADDRESS}</strong>
         </p>
         <p style="margin:0 0 8px">
-          From the <strong>Gardiner Expressway</strong>: take the
-          <strong>Bay Street / Yonge Street</strong> exit, head north on Bay Street,
-          then turn west on Front Street.
+          Paid parking may be available at nearby lots and garages
+          (parking costs are <strong>at your own expense</strong>).
         </p>
-        <p style="margin:0 0 16px">
-          Paid parking is available at nearby lots and garages, including
-          <strong>Green P Parking at 10 Bay Street</strong> and
-          <strong>Union Station Parking at 65 Front Street West</strong>.
-          Please note that parking costs are <strong>at your own expense</strong>.
-        </p>
-
-        <h3 style="color:#1a5c3e;font-size:16px;margin:0 0 12px">
-          &#128647; Getting Here — By Public Transit
-        </h3>
-        <p style="margin:0 0 8px">
-          The most convenient option is the <strong>TTC subway</strong>:
-        </p>
-        <ul style="margin:0 0 8px;padding-left:20px">
-          <li style="margin-bottom:4px">
-            Take <strong>Line 1 (Yonge–University)</strong> to
-            <strong>Union Station</strong>.
-          </li>
-          <li style="margin-bottom:4px">
-            Exit the station at the <strong>Front Street / Bay Street</strong> exit.
-          </li>
-          <li style="margin-bottom:4px">
-            Walk west along <strong>Front Street</strong> — our building will be
-            on your right.
-          </li>
-        </ul>
         <p style="margin:0 0 24px">
-          GO Train passengers can also arrive directly at
-          <strong>Union Station</strong>, which connects to the same street-level exit.
+          <a href="https://maps.google.com/?q={OFFICE_ADDRESS.replace(' ', '+')}"
+             style="color:#3d8a64;font-weight:600">
+            &#128205; Get directions on Google Maps &#8594;
+          </a>
         </p>
         """
     else:

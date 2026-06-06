@@ -74,3 +74,5 @@ OFFICE_ADDRESS       = '123 Main Street, City, Province/State, Postal Code'
 OFFICE_FLOOR_ROOM    = 'Office 100, 1st Floor'
 OFFICE_CONTACT_NAME  = 'Reception Desk'
 OFFICE_CONTACT_PHONE = ''                           # optional, e.g. "(416) 555-0100"
+OFFICE_TIMEZONE      = 'America/Toronto'            # IANA timezone — used in .ics calendar invites
+                                                    # See: en.wikipedia.org/wiki/List_of_tz_database_time_zones

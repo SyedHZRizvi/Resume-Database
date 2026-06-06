@@ -18,10 +18,11 @@ and tracking hiring decisions end-to-end.
 ## Tech Stack
 
 - **Backend**: Python 3 + Flask
-- **Database**: SQLite (single file, easy to back up)
-- **AI**: Anthropic Claude (resume parsing, optional)
-- **Email**: SMTP via Proton Mail Bridge / Gmail / Outlook
+- **Database**: SQLite (local dev) / Supabase PostgreSQL (production)
+- **AI**: Anthropic Claude (resume parsing, interview questions, skill tagging)
+- **Email**: SMTP via Proton Mail Bridge / Gmail / Outlook (or Resend API)
 - **Video**: Jitsi Meet (no API key required)
+- **Hosting**: Render.com (auto-deploy from GitHub main branch)
 
 ## Quick Start
 
