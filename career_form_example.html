@@ -113,18 +113,74 @@
     <textarea name="cover_letter" id="cover_letter" rows="5"
               placeholder="A short paragraph about yourself…"></textarea>
 
-    <button type="submit" id="submitBtn">Submit Application</button>
-    <div id="msg"></div>
+    <!-- Privacy consent — required before submission -->
+    <label style="display:flex;align-items:flex-start;gap:10px;margin-top:18px;
+                  padding:12px;background:#f0fdf4;border:1px solid #c2e0cf;
+                  border-radius:8px;cursor:pointer">
+      <input type="checkbox" id="privacyConsent" required
+             style="margin-top:3px;flex-shrink:0;width:16px;height:16px;
+                    accent-color:#3d8a64;cursor:pointer" />
+      <span style="font-size:13px;color:#374151;line-height:1.55">
+        I have read and agree to the privacy notice below.
+        <span style="color:#dc2626">*</span>
+      </span>
+    </label>
+
+    <button type="submit" id="submitBtn"
+            style="margin-top:14px">Submit Application</button>
+    <div id="msg" role="alert" aria-live="polite"></div>
   </form>
 
-  <p style="font-size:12px;color:#6b7280;margin-top:16px;line-height:1.55">
-    By submitting this form you consent to TransCrypts collecting and securely
-    storing your personal information (name, email address, phone number, and
-    resume) for recruitment purposes only. Your data will be reviewed solely by
-    authorised HR staff and will not be shared with third parties. To request
-    access to or deletion of your data, email
-    <a href="mailto:hr@transcrypts.com" style="color:#3d8a64">hr@transcrypts.com</a>.
-  </p>
+  <details style="margin-top:16px">
+    <summary style="font-size:13px;color:#4b5563;cursor:pointer;
+                    font-weight:600;padding:6px 0">
+      Privacy Notice — how we handle your information
+    </summary>
+    <div style="font-size:13px;color:#4b5563;margin-top:10px;line-height:1.65;
+                padding:14px;background:#f9fafb;border-radius:8px;
+                border:1px solid #e5e7eb">
+      <p style="margin:0 0 8px">
+        <strong>What we collect:</strong> Your name, email address, phone number,
+        LinkedIn profile, and the resume you upload. We may also collect your
+        cover letter and the position you select.
+      </p>
+      <p style="margin:0 0 8px">
+        <strong>How we use it:</strong> Solely to assess your suitability for
+        current and future roles at TransCrypts. Your resume is analysed by an
+        AI system (Anthropic Claude) to extract professional information and
+        categorise your skills automatically. This is a screening aid — all
+        hiring decisions involve human review.
+      </p>
+      <p style="margin:0 0 8px">
+        <strong>Who processes your data:</strong> Authorised TransCrypts HR
+        staff, and the following service providers acting on our behalf:
+        Supabase Inc. (database, USA), Render Inc. (hosting, USA),
+        Anthropic PBC (AI resume parsing, USA), and our email provider.
+        Your data may be transferred to and processed in the United States
+        under appropriate contractual protections.
+      </p>
+      <p style="margin:0 0 8px">
+        <strong>Retention:</strong> Applications are retained for up to 2 years
+        from the date of submission or last activity, after which they are
+        anonymised or deleted.
+      </p>
+      <p style="margin:0 0 8px">
+        <strong>Your rights:</strong> You may request access to, correction of,
+        or deletion of your personal information at any time. EU residents have
+        additional rights including data portability and the right to object.
+        Email <a href="mailto:hr@transcrypts.com" style="color:#3d8a64">
+        hr@transcrypts.com</a> — we will respond within 30 days.
+      </p>
+      <p style="margin:0">
+        <strong>Questions or complaints:</strong> Contact us at
+        <a href="mailto:hr@transcrypts.com" style="color:#3d8a64">hr@transcrypts.com</a>.
+        Canadian residents may also file a complaint with the
+        <a href="https://www.priv.gc.ca" target="_blank" style="color:#3d8a64">
+        Office of the Privacy Commissioner of Canada</a>.
+        EU residents may contact their national data protection authority.
+      </p>
+    </div>
+  </details>
 </div>
 
 <script>

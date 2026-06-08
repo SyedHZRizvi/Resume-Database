@@ -1304,7 +1304,7 @@ def compute_text_hash(raw_bytes, filename):
     if not norm or len(norm) < 50:
         # Too little extractable text to be a reliable identity signal.
         return ''
-    return hashlib.md5(norm.encode('utf-8')).hexdigest()
+    return hashlib.sha256(norm.encode('utf-8')).hexdigest()  # SHA-256; MD5 is collision-prone
 
 
 def _read_file_bytes_from_field(file_obj):
@@ -3561,8 +3561,8 @@ def _candidate_email_html(applicant, interview_date, interview_time,
                 jitsi_note = """
             <p style="margin:14px 0 0;font-size:12px;color:#6b7280;
                       text-align:center;line-height:1.5">
-              &#128274; This meeting uses <strong>Jitsi Meet</strong> — a free,
-              end-to-end encrypted video service.<br>
+              This meeting uses <strong>Jitsi Meet</strong> — a secure,
+              browser-based video service operated by 8x8, Inc. (USA).<br>
               <strong>No account or app required</strong> — just click the
               button above in any modern browser (Chrome, Firefox, Safari, Edge).<br>
               <span style="color:#94a3b8">
@@ -3696,6 +3696,15 @@ def _candidate_email_html(applicant, interview_date, interview_time,
       <strong>Human Resources Team</strong><br>
       <span style="color:#3d8a64;font-weight:700">Trans</span><span
             style="color:#6DC49A;font-weight:700">Crypts</span>
+    </p>
+
+    <p style="margin:20px 0 0;color:#9ca3af;font-size:11px;
+              border-top:1px solid #f3f4f6;padding-top:14px;line-height:1.55">
+      <strong>{COMPANY_NAME}</strong> &nbsp;|&nbsp; {OFFICE_ADDRESS}<br>
+      This email was sent as part of your application process.
+      To opt out of future recruitment emails, reply with
+      <em>Unsubscribe</em> in the subject line or email
+      <a href="mailto:hr@transcrypts.com" style="color:#6b7280">hr@transcrypts.com</a>.
     </p>
   </div>
 </body></html>"""
@@ -6141,7 +6150,7 @@ def api_careers_apply():
     # ── Save the file with a unique filename ────────────────────────────────
     raw = file.read()
     file.seek(0)
-    file_hash = hashlib.md5(raw).hexdigest()
+    file_hash = hashlib.sha256(raw).hexdigest()   # SHA-256 replaces MD5 — collision-resistant
     text_hash = compute_text_hash(raw, file.filename or '')
     safe_name = secure_filename(file.filename)
     base, ext = os.path.splitext(safe_name)
@@ -6245,8 +6254,8 @@ def api_careers_apply():
                 'duplicate': True,
                 'message': (
                     "We already have your application on file — thank you! "
-                    f"We've noted your interest in {position or 'this opportunity'} "
-                    "and our team will be in touch."
+                    f"We have noted your interest in {position or 'this opportunity'}. "
+                    "We will reach out if a suitable opportunity arises."
                 ),
             })
 
@@ -6304,7 +6313,7 @@ def api_careers_apply():
                     'applicant_id': existing_by_name_phone['id'],
                     'duplicate': True,
                     'message': ("We already have your application on file — "
-                                "thank you! Our team will be in touch."),
+                                "thank you! We will reach out if a suitable opportunity arises."),
                 })
 
         # Build the notes field: parsed resume notes + any discrepancy flags.

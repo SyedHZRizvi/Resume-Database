@@ -374,8 +374,14 @@
                       Rejection Reason <span class="text-danger">*</span>
                     </label>
                     <textarea name="rejection_reason" class="form-control form-control-sm" rows="2"
-                              placeholder="e.g. Salary expectation mismatch, better candidate chosen…"
+                              placeholder="e.g. Position filled, qualifications did not meet requirements, salary expectations not aligned…"
                               >{{ applicant.rejection_reason or '' }}</textarea>
+                    <div class="form-text text-warning-emphasis" style="font-size:.74rem">
+                      <i class="bi bi-exclamation-triangle-fill me-1"></i>
+                      Use objective, job-related reasons only. Do not reference
+                      protected characteristics (age, gender, ethnicity, disability, etc.).
+                      This field may be disclosed in legal proceedings.
+                    </div>
                   </div>
                 </div>
 
@@ -385,8 +391,13 @@
                     Notes / Reason <span class="text-danger" id="notesRequired" style="display:none">*</span>
                   </label>
                   <textarea name="decision_notes" class="form-control form-control-sm" rows="2"
-                            placeholder="Add any relevant notes…" id="decisionNotesField"
+                            placeholder="Add any relevant notes — job-related observations only…"
+                            id="decisionNotesField"
                             >{{ applicant.decision_notes or '' }}</textarea>
+                  <div class="form-text text-muted" style="font-size:.74rem">
+                    Job-related observations only. Do not record personal
+                    characteristics. Subject to access requests.
+                  </div>
                 </div>
 
                 <button type="submit" class="btn btn-sm btn-success w-100">

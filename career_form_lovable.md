@@ -239,19 +239,67 @@ export default function Careers() {
                 </div>
               )}
 
-              <p className="text-xs text-slate-400 leading-relaxed mt-2">
-                By submitting this form you consent to TransCrypts collecting and
-                securely storing your personal information (name, email, phone, and
-                resume) for recruitment purposes only. Data is reviewed solely by
-                authorised HR staff and is not shared with third parties. To request
-                access to or deletion of your data, email{" "}
+              {/* Privacy consent — required checkbox */}
+              <div className="flex items-start gap-3 p-3 bg-emerald-50
+                              border border-emerald-200 rounded-lg">
+                <input
+                  type="checkbox"
+                  id="privacyConsent"
+                  required
+                  className="mt-0.5 h-4 w-4 accent-emerald-600 flex-shrink-0"
+                />
+                <label htmlFor="privacyConsent"
+                       className="text-sm text-slate-700 cursor-pointer leading-relaxed">
+                  I have read and agree to the{" "}
+                  <a href="#privacy-notice"
+                     className="text-emerald-600 hover:underline font-medium">
+                    Privacy Notice
+                  </a>
+                  {" "}<span className="text-rose-600">*</span>
+                </label>
+              </div>
+
+            </form>
+
+            {/* Privacy Notice — expandable */}
+            <details id="privacy-notice" className="mt-4">
+              <summary className="text-sm font-semibold text-slate-600
+                                   cursor-pointer hover:text-slate-800">
+                Privacy Notice — how we handle your information
+              </summary>
+              <div className="mt-3 p-4 bg-slate-50 border border-slate-200
+                              rounded-lg text-xs text-slate-600 space-y-2
+                              leading-relaxed">
+                <p><strong>What we collect:</strong> Your name, email, phone,
+                LinkedIn profile, and your resume. We may also collect your
+                cover letter and chosen position.</p>
+                <p><strong>How we use it:</strong> Solely to assess your suitability
+                for roles at TransCrypts. Your resume is analysed by an AI system
+                (Anthropic Claude) to extract professional information and categorise
+                skills automatically. All hiring decisions involve human review.</p>
+                <p><strong>Who processes your data:</strong> Authorised TransCrypts
+                HR staff, and service providers acting on our behalf: Supabase Inc.
+                (database, USA), Render Inc. (hosting, USA), Anthropic PBC (AI
+                parsing, USA), and our email provider. Data may be transferred to
+                and processed in the United States under appropriate contractual
+                protections.</p>
+                <p><strong>Retention:</strong> Applications are retained for up to
+                2 years from submission or last activity, then anonymised or deleted.</p>
+                <p><strong>Your rights:</strong> You may request access to, correction
+                of, or deletion of your data. EU residents have additional rights.
+                Email{" "}
                 <a href="mailto:hr@transcrypts.com"
                    className="text-emerald-600 hover:underline">
                   hr@transcrypts.com
+                </a>{" "}— we respond within 30 days. Canadian residents may also
+                contact the{" "}
+                <a href="https://www.priv.gc.ca" target="_blank" rel="noreferrer"
+                   className="text-emerald-600 hover:underline">
+                  Office of the Privacy Commissioner of Canada
                 </a>.
-              </p>
-
-            </form>
+                </p>
+              </div>
+            </details>
           </CardContent>
         </Card>
       </div>
